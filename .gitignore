@@ -24,33 +24,34 @@ wheels/
 venv/
 env/
 ENV/
+.venv
 
 # IDE
 .vscode/
 .idea/
 *.swp
 *.swo
+*~
 
 # Environment variables
 .env
+.env.local
+.env.*.local
 
-# Database
-*.db
-*.sqlite3
+# Data directories
+data/uploads/*
+data/results/*
+data/temp/*
+!data/uploads/.gitkeep
+!data/results/.gitkeep
+!data/temp/.gitkeep
 
 # Logs
+logs/*.log
 *.log
-logs/
 
-# Temporary files
-temp/
-uploads/
-results/
-
-# Docker
-.dockerignore
-
-# Testing
+# Test results
+test_result.json
 .pytest_cache/
 .coverage
 htmlcov/
@@ -58,3 +59,14 @@ htmlcov/
 # OS
 .DS_Store
 Thumbs.db
+desktop.ini
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Temporary files
+*.tmp
+*.bak
+*.swp
