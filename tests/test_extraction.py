@@ -5,26 +5,29 @@ import json
 import sys
 from pathlib import Path
 
-# Agregar el directorio src al path
-sys.path.insert(0, str(Path(__file__).parent / 'src'))
+# Agregar el directorio raíz al path
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from domain.invoice_processor import InvoiceProcessor
+from src.extractor import InvoiceExtractor
+from src.classifier import PDFClassifier
+from src.config import get_db_config
 
 
 def test_extraction():
     """Prueba la extracción de datos de los archivos de ejemplo"""
     
     # Rutas a los archivos de ejemplo
-    xml_path = "ejemplos/ad09004334370002500033071.xml"
-    pdf_path = "ejemplos/FQE139169.pdf"
+    xml_path = "ejemplos/z08002503820122500006DF7/ad08002503820122500006DF7.xml"
+    pdf_path = "ejemplos/z08002503820122500006DF7/ad08002503820122500006DF7.pdf"
     
     print("=" * 80)
     print("PRUEBA DE EXTRACCIÓN DE FACTURAS")
     print("=" * 80)
     print()
     
-    # Crear procesador
-    processor = InvoiceProcessor()
+    # Crear extractor y clasificador
+    extractor = InvoiceExtractor()
+    classifier = PDFClassifier(get_db_config())
     
     # Procesar factura
     print("Procesando factura...")
@@ -33,63 +36,96 @@ def test_extraction():
     print()
     
     try:
-        result = processor.process_invoice(xml_path=xml_path, pdf_path=pdf_path)
+        # Extraer datos
+        print("1. Extrayendo texto de XML y PDF...")
+        data = extractor.extract_combined(xml_path, pdf_path)
+        
+        print(f"   ✅ XML: {len(data['xml_text'])} caracteres (calidad: {data['xml_quality']:.0%})")
+        print(f"   ✅ PDF: {len(data['pdf_text'])} caracteres")
+        print(f"   ⚖️  Peso XML: {data['xml_weight']:.0%}")
+        print(f"   ⚖️  Peso PDF: {data['pdf_weight']:.0%}")
+        print()
+        
+        # Clasificar
+        print("2. Clasificando factura...")
+        sucursal, unidad = classifier.classify(
+            data['text'],
+            xml_weight=data['xml_weight'],
+            pdf_weight=data['pdf_weight']
+        )
+        
+        result = {
+            'clasificacion': {
+                'sucursal': sucursal,
+                'unidad_funcional': unidad
+            },
+            'metadata': {
+                'xml_quality': data['xml_quality'],
+                'xml_weight': data['xml_weight'],
+                'pdf_weight': data['pdf_weight'],
+                'has_xml': data['has_xml'],
+                'has_pdf': data['has_pdf']
+            },
+            'texto_extraido': {
+                'xml': data['xml_text'][:500] + '...' if len(data['xml_text']) > 500 else data['xml_text'],
+                'pdf': data['pdf_text'][:500] + '...' if len(data['pdf_text']) > 500 else data['pdf_text']
+            }
+        }
         
         # Mostrar resultados
         print("=" * 80)
-        print("RESULTADOS DE LA EXTRACCIÓN")
+        print("RESULTADOS DE LA EXTRACCIÓN Y CLASIFICACIÓN")
         print("=" * 80)
         print()
         
-        # Clasificación
-        print("📍 CLASIFICACIÓN:")
-        print(f"  Sucursal detectada: {result['clasificacion']['sucursal']}")
-        print(f"  Área responsable: {result['clasificacion']['area']}")
-        print(f"  Confianza: {result['clasificacion']['confianza']}")
-        print(f"  Fuente: {result['clasificacion']['fuente']}")
+        # Sucursal
+        print("🏢 SUCURSAL:")
+        if sucursal['success']:
+            print(f"   ✅ DETECTADA: {sucursal['nombre']}")
+            print(f"   📊 Score: {sucursal['score']}")
+            print(f"   🔑 Keywords: {', '.join(sucursal['keywords'][:5])}")
+        else:
+            print("   ❌ No detectada")
         print()
         
-        # Proveedor
-        print("🏢 PROVEEDOR:")
-        if result['proveedor']:
-            for key, value in result['proveedor'].items():
-                print(f"  {key.capitalize()}: {value}")
+        # Unidad Funcional
+        print("📦 UNIDAD FUNCIONAL:")
+        if unidad['success']:
+            print(f"   ✅ DETECTADA: {unidad['nombre']}")
+            print(f"   📊 Score: {unidad['score']}")
+            print(f"   🔑 Keywords: {', '.join(unidad['keywords'][:5])}")
+        else:
+            print("   ❌ No detectada")
         print()
         
-        # Cliente
-        print("👤 CLIENTE:")
-        if result['cliente']:
-            for key, value in result['cliente'].items():
-                print(f"  {key.capitalize()}: {value}")
+        # Metadata
+        print("📊 METADATA:")
+        print(f"   XML Quality: {data['xml_quality']:.0%}")
+        print(f"   XML Weight: {data['xml_weight']:.0%}")
+        print(f"   PDF Weight: {data['pdf_weight']:.0%}")
+        print(f"   Has XML: {'✅' if data['has_xml'] else '❌'}")
+        print(f"   Has PDF: {'✅' if data['has_pdf'] else '❌'}")
         print()
         
-        # Factura
-        print("📄 FACTURA:")
-        if result['factura']:
-            for key, value in result['factura'].items():
-                print(f"  {key.capitalize()}: {value}")
+        # Muestra de texto extraído
+        print("� MUEASTRA DE TEXTO EXTRAÍDO (primeros 300 caracteres):")
+        print("   XML:")
+        print(f"   {data['xml_text'][:300]}...")
         print()
-        
-        # Totales
-        print("💰 TOTALES:")
-        if result['totales']:
-            for key, value in result['totales'].items():
-                print(f"  {key.capitalize()}: {value}")
-        print()
-        
-        # Items (primeros 5)
-        print("📦 ITEMS (primeros 5):")
-        if result['items']:
-            for i, item in enumerate(result['items'][:5], 1):
-                print(f"  {i}. {item.get('descripcion', 'N/A')}")
-                print(f"     Cantidad: {item.get('cantidad', 'N/A')} | Precio: {item.get('precio', 'N/A')}")
+        print("   PDF:")
+        print(f"   {data['pdf_text'][:300]}...")
         print()
         
         # Resumen para API
         print("=" * 80)
-        print("RESUMEN PARA API (JSON)")
+        print("RESUMEN JSON")
         print("=" * 80)
-        summary = processor.get_classification_summary(result)
+        summary = {
+            'success': sucursal['success'] and unidad['success'],
+            'sucursal': sucursal if sucursal['success'] else None,
+            'unidad_funcional': unidad if unidad['success'] else None,
+            'metadata': result['metadata']
+        }
         print(json.dumps(summary, indent=2, ensure_ascii=False))
         print()
         
