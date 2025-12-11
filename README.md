@@ -57,6 +57,12 @@ GET /api/stats
 ```
 Obtiene estadísticas del sistema.
 
+### Logs del Sistema
+```bash
+GET /api/logs
+```
+Obtiene resumen de logs y archivos procesados.
+
 ### Health Check
 ```bash
 GET /api/health
@@ -93,6 +99,11 @@ async function clasificarFactura(xmlPath, pdfPath) {
 python scripts/test_api.py
 ```
 
+### Prueba del sistema de logging
+```bash
+python scripts/test_logging.py
+```
+
 ### Prueba completa de API
 ```bash
 python test_api_complete.py
@@ -106,6 +117,8 @@ python test_api_complete.py
 - ✅ Keywords parametrizables en base de datos
 - ✅ API REST lista para Node.js
 - ✅ Historial completo de clasificaciones
+- ✅ Sistema de logging completo (peticiones, archivos, errores)
+- ✅ Monitoreo en tiempo real
 
 ## 📁 Estructura del Proyecto
 
@@ -116,6 +129,7 @@ OCR-Plataform/
 │   ├── classifier.py       # Clasificador con keywords
 │   ├── extractor.py        # Extractor XML + PDF
 │   ├── learning.py         # Sistema de auto-aprendizaje
+│   ├── logger.py           # Sistema de logging
 │   └── config.py           # Configuración
 ├── database/
 │   ├── schema.sql          # Estructura de BD
@@ -123,7 +137,12 @@ OCR-Plataform/
 │   └── add_admin_keywords.sql
 ├── scripts/
 │   ├── test_api.py         # Prueba rápida
+│   ├── test_logging.py     # Prueba de logging
 │   └── classify.py         # Clasificación directa
+├── logs/                   # Logs del sistema
+│   ├── api_requests.log    # Peticiones HTTP
+│   ├── processed_files.log # Archivos procesados
+│   └── statistics.log      # Estadísticas
 ├── ejemplos/               # Facturas de ejemplo
 ├── test_api_complete.py    # Prueba completa
 └── requirements.txt        # Dependencias
@@ -151,8 +170,29 @@ Para producción, configurar:
 - Monitoreo y logs
 - Backup de base de datos
 
+## 📝 Sistema de Logging
+
+El sistema registra automáticamente:
+- ✅ Todas las peticiones HTTP (endpoint, método, status, duración)
+- ✅ Archivos procesados (XML, PDF, resultados)
+- ✅ Validaciones (correctas/incorrectas)
+- ✅ Errores con traceback completo
+
+**Ver logs en tiempo real:**
+```bash
+# Windows PowerShell
+Get-Content logs/api_requests.log -Wait
+
+# Ver resumen de logs
+curl http://localhost:8000/api/logs
+```
+
+**Documentación completa**: Ver `LOGGING_SISTEMA.md`
+
 ## 📞 Soporte
 
 - **Documentación API**: http://localhost:8000/docs
 - **Health Check**: http://localhost:8000/api/health
+- **Logs del Sistema**: http://localhost:8000/api/logs
 - **Integración Node.js**: Ver `INTEGRACION_NODEJS.md`
+- **Sistema de Logging**: Ver `LOGGING_SISTEMA.md`

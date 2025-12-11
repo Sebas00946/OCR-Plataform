@@ -2,18 +2,21 @@
 API REST para clasificación de facturas
 Compatible con Node.js backend
 """
-from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks
+from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
 import tempfile
 import os
+import time
+import traceback
 from pathlib import Path
 
 from .config import get_db_config
 from .classifier import PDFClassifier
 from .extractor import InvoiceExtractor
 from .learning import LearningSystem
+from .logger import ocr_logger
 
 # Crear app
 app = FastAPI(
@@ -36,6 +39,36 @@ db_config = get_db_config()
 classifier = PDFClassifier(db_config)
 extractor = InvoiceExtractor()
 learning_system = LearningSystem(db_config)
+
+
+# ============================================
+# MIDDLEWARE PARA LOGGING
+# ============================================
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    """Middleware para registrar todas las peticiones"""
+    start_time = time.time()
+    
+    # Obtener IP del cliente
+    client_ip = request.client.host if request.client else "unknown"
+    
+    # Procesar request
+    response = await call_next(request)
+    
+    # Calcular duración
+    duration_ms = (time.time() - start_time) * 1000
+    
+    # Registrar petición
+    ocr_logger.log_request(
+        endpoint=str(request.url.path),
+        method=request.method,
+        status_code=response.status_code,
+        duration_ms=duration_ms,
+        client_ip=client_ip
+    )
+    
+    return response
 
 
 # ============================================
@@ -73,7 +106,8 @@ async def root():
             "classify": "/api/classify",
             "validate": "/api/validate",
             "stats": "/api/stats",
-            "health": "/api/health"
+            "health": "/api/health",
+            "logs": "/api/logs"
         }
     }
 
@@ -93,6 +127,12 @@ async def health_check():
             "version": "1.0.0"
         }
     except Exception as e:
+        ocr_logger.log_error(
+            endpoint="/api/health",
+            error_message=str(e),
+            error_type=type(e).__name__,
+            traceback_info=traceback.format_exc()
+        )
         raise HTTPException(status_code=503, detail=f"Service unhealthy: {str(e)}")
 
 
@@ -115,6 +155,11 @@ async def classify_invoice(
         Clasificación con sucursal y unidad funcional
     """
     if not xml_file and not pdf_file:
+        ocr_logger.log_error(
+            endpoint="/api/classify",
+            error_message="No se proporcionaron archivos",
+            error_type="ValidationError"
+        )
         raise HTTPException(
             status_code=400,
             detail="Debe proporcionar al menos un archivo (XML o PDF)"
@@ -122,19 +167,28 @@ async def classify_invoice(
     
     xml_path = None
     pdf_path = None
+    xml_filename = None
+    pdf_filename = None
     
     try:
         # Guardar archivos temporalmente
         if xml_file:
+            xml_filename = xml_file.filename
             xml_path = _save_temp_file(xml_file, ".xml")
         
         if pdf_file:
+            pdf_filename = pdf_file.filename
             pdf_path = _save_temp_file(pdf_file, ".pdf")
         
         # Extraer texto
         data = extractor.extract_combined(xml_path, pdf_path)
         
         if not data['text']:
+            ocr_logger.log_error(
+                endpoint="/api/classify",
+                error_message="No se pudo extraer texto de los archivos",
+                error_type="ExtractionError"
+            )
             raise HTTPException(
                 status_code=400,
                 detail="No se pudo extraer texto de los archivos"
@@ -148,13 +202,24 @@ async def classify_invoice(
         )
         
         # Guardar en historial (inmediatamente para obtener el ID)
-        archivo_nombre = pdf_file.filename if pdf_file else xml_file.filename
+        archivo_nombre = pdf_filename if pdf_filename else xml_filename
         historial_id = learning_system.save_classification(
             factura_id=factura_id,
             archivo_nombre=archivo_nombre,
             sucursal=sucursal,
             unidad=unidad,
             metadata=data
+        )
+        
+        # Registrar procesamiento de archivos
+        ocr_logger.log_file_processing(
+            factura_id=factura_id,
+            xml_file=xml_filename,
+            pdf_file=pdf_filename,
+            sucursal_detectada=sucursal.get('nombre') if sucursal['success'] else None,
+            unidad_detectada=unidad.get('nombre') if unidad['success'] else None,
+            success=sucursal['success'] and unidad['success'],
+            historial_id=historial_id
         )
         
         return ClassificationResponse(
@@ -170,6 +235,17 @@ async def classify_invoice(
                 'has_pdf': data['has_pdf']
             }
         )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        ocr_logger.log_error(
+            endpoint="/api/classify",
+            error_message=str(e),
+            error_type=type(e).__name__,
+            traceback_info=traceback.format_exc()
+        )
+        raise HTTPException(status_code=500, detail=f"Error interno: {str(e)}")
     
     finally:
         # Limpiar archivos temporales
@@ -191,6 +267,15 @@ async def validate_classification(validation: ValidationRequest):
         Confirmación y sugerencias de mejora
     """
     try:
+        # Registrar validación
+        ocr_logger.log_validation(
+            historial_id=validation.historial_id,
+            es_correcta=validation.es_correcta,
+            sucursal_correcta_id=validation.sucursal_correcta_id,
+            unidad_correcta_id=validation.unidad_correcta_id,
+            observaciones=validation.observaciones
+        )
+        
         result = learning_system.validate_and_learn(
             historial_id=validation.historial_id,
             es_correcta=validation.es_correcta,
@@ -209,6 +294,12 @@ async def validate_classification(validation: ValidationRequest):
         }
     
     except Exception as e:
+        ocr_logger.log_error(
+            endpoint="/api/validate",
+            error_message=str(e),
+            error_type=type(e).__name__,
+            traceback_info=traceback.format_exc()
+        )
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -217,8 +308,18 @@ async def get_statistics():
     """Obtiene estadísticas del sistema"""
     try:
         stats = learning_system.get_statistics()
+        
+        # Registrar consulta de estadísticas
+        ocr_logger.log_statistics(stats)
+        
         return stats
     except Exception as e:
+        ocr_logger.log_error(
+            endpoint="/api/stats",
+            error_message=str(e),
+            error_type=type(e).__name__,
+            traceback_info=traceback.format_exc()
+        )
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -233,6 +334,12 @@ async def get_sucursal_keywords(sucursal_id: int):
             "keywords": keywords
         }
     except Exception as e:
+        ocr_logger.log_error(
+            endpoint=f"/api/keywords/sucursales/{sucursal_id}",
+            error_message=str(e),
+            error_type=type(e).__name__,
+            traceback_info=traceback.format_exc()
+        )
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -247,6 +354,44 @@ async def get_unidad_keywords(unidad_id: int):
             "keywords": keywords
         }
     except Exception as e:
+        ocr_logger.log_error(
+            endpoint=f"/api/keywords/unidades/{unidad_id}",
+            error_message=str(e),
+            error_type=type(e).__name__,
+            traceback_info=traceback.format_exc()
+        )
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/logs")
+async def get_logs_summary():
+    """
+    Obtiene resumen de logs del sistema
+    
+    Returns:
+        Estadísticas de peticiones y archivos procesados
+    """
+    try:
+        request_counts = ocr_logger.get_request_count()
+        file_stats = ocr_logger.get_file_processing_count()
+        
+        return {
+            "success": True,
+            "peticiones_por_endpoint": request_counts,
+            "archivos_procesados": file_stats,
+            "archivos_log": {
+                "api_requests": "logs/api_requests.log",
+                "processed_files": "logs/processed_files.log",
+                "statistics": "logs/statistics.log"
+            }
+        }
+    except Exception as e:
+        ocr_logger.log_error(
+            endpoint="/api/logs",
+            error_message=str(e),
+            error_type=type(e).__name__,
+            traceback_info=traceback.format_exc()
+        )
         raise HTTPException(status_code=500, detail=str(e))
 
 

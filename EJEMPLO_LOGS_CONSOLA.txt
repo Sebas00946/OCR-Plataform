@@ -1,0 +1,140 @@
+================================================================================
+EJEMPLO DE SALIDA EN CONSOLA - SISTEMA DE LOGGING
+================================================================================
+
+Cuando inicias el servidor:
+----------------------------
+INFO:     Started server process [12345]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+
+
+Cuando llega una petición GET /:
+---------------------------------
+2024-12-11 10:30:00 - OCR_API - INFO - [GET] / - Status: 200 - Duration: 5.23ms - Data: {"timestamp": "2024-12-11T10:30:00", "endpoint": "/", "method": "GET", "status_code": 200, "duration_ms": 5.23, "client_ip": "127.0.0.1"}
+✅ Log guardado: / [GET] - 200
+INFO:     127.0.0.1:54321 - "GET / HTTP/1.1" 200 OK
+
+
+Cuando llega una petición GET /api/health:
+-------------------------------------------
+2024-12-11 10:30:05 - OCR_API - INFO - [GET] /api/health - Status: 200 - Duration: 12.45ms - Data: {"timestamp": "2024-12-11T10:30:05", "endpoint": "/api/health", "method": "GET", "status_code": 200, "duration_ms": 12.45, "client_ip": "127.0.0.1"}
+✅ Log guardado: /api/health [GET] - 200
+INFO:     127.0.0.1:54322 - "GET /api/health HTTP/1.1" 200 OK
+
+
+Cuando se clasifica una factura (POST /api/classify):
+------------------------------------------------------
+2024-12-11 10:30:10 - OCR_FILES - INFO - Factura procesada - ID: 12345 - Archivos: XML: factura_001.xml + PDF: factura_001.pdf - Sucursal: Clinica Medilaser S.A.S - Florencia - Unidad: Almacén - FLA - Success: True - Data: {"timestamp": "2024-12-11T10:30:10", "factura_id": 12345, "xml_file": "factura_001.xml", "pdf_file": "factura_001.pdf", "has_xml": true, "has_pdf": true, "sucursal_detectada": "Clinica Medilaser S.A.S - Florencia", "unidad_detectada": "Almacén - FLA", "success": true, "historial_id": 123}
+✅ Log de archivo guardado: Factura 12345 - XML: factura_001.xml + PDF: factura_001.pdf
+
+2024-12-11 10:30:10 - OCR_API - INFO - [POST] /api/classify - Status: 200 - Duration: 1234.56ms - Data: {"timestamp": "2024-12-11T10:30:10", "endpoint": "/api/classify", "method": "POST", "status_code": 200, "duration_ms": 1234.56, "client_ip": "127.0.0.1"}
+✅ Log guardado: /api/classify [POST] - 200
+INFO:     127.0.0.1:54323 - "POST /api/classify HTTP/1.1" 200 OK
+
+
+Cuando se valida una clasificación CORRECTA (POST /api/validate):
+------------------------------------------------------------------
+2024-12-11 10:30:15 - OCR_API - INFO - Validación - Historial ID: 123 - CORRECTA ✓ - Data: {"timestamp": "2024-12-11T10:30:15", "historial_id": 123, "es_correcta": true, "sucursal_correcta_id": null, "unidad_correcta_id": null, "observaciones": "Clasificación perfecta"}
+✅ Log de validación guardado: Historial 123 - CORRECTA ✓
+
+2024-12-11 10:30:15 - OCR_API - INFO - [POST] /api/validate - Status: 200 - Duration: 45.67ms - Data: {"timestamp": "2024-12-11T10:30:15", "endpoint": "/api/validate", "method": "POST", "status_code": 200, "duration_ms": 45.67, "client_ip": "127.0.0.1"}
+✅ Log guardado: /api/validate [POST] - 200
+INFO:     127.0.0.1:54324 - "POST /api/validate HTTP/1.1" 200 OK
+
+
+Cuando se valida una clasificación INCORRECTA (POST /api/validate):
+--------------------------------------------------------------------
+2024-12-11 10:30:20 - OCR_API - WARNING - Validación - Historial ID: 124 - INCORRECTA ✗ - Data: {"timestamp": "2024-12-11T10:30:20", "historial_id": 124, "es_correcta": false, "sucursal_correcta_id": 5, "unidad_correcta_id": 10, "observaciones": "Debería ser Neiva"}
+✅ Log de validación guardado: Historial 124 - INCORRECTA ✗
+
+2024-12-11 10:30:20 - OCR_API - INFO - [POST] /api/validate - Status: 200 - Duration: 67.89ms - Data: {"timestamp": "2024-12-11T10:30:20", "endpoint": "/api/validate", "method": "POST", "status_code": 200, "duration_ms": 67.89, "client_ip": "127.0.0.1"}
+✅ Log guardado: /api/validate [POST] - 200
+INFO:     127.0.0.1:54325 - "POST /api/validate HTTP/1.1" 200 OK
+
+
+Cuando se consultan estadísticas (GET /api/stats):
+---------------------------------------------------
+2024-12-11 10:30:25 - OCR_STATS - INFO - Estadísticas consultadas - Total: 150 - Precisión: 94.67% - Data: {"timestamp": "2024-12-11T10:30:25", "stats": {"total_clasificaciones": 150, "correctas": 142, "incorrectas": 8, "precision": 94.67, "confianza_promedio": {"sucursal": 28.5, "unidad": 35.2}}}
+✅ Log de estadísticas guardado: Precisión 94.67%
+
+2024-12-11 10:30:25 - OCR_API - INFO - [GET] /api/stats - Status: 200 - Duration: 23.45ms - Data: {"timestamp": "2024-12-11T10:30:25", "endpoint": "/api/stats", "method": "GET", "status_code": 200, "duration_ms": 23.45, "client_ip": "127.0.0.1"}
+✅ Log guardado: /api/stats [GET] - 200
+INFO:     127.0.0.1:54326 - "GET /api/stats HTTP/1.1" 200 OK
+
+
+Cuando se consulta el resumen de logs (GET /api/logs):
+-------------------------------------------------------
+2024-12-11 10:30:30 - OCR_API - INFO - [GET] /api/logs - Status: 200 - Duration: 15.67ms - Data: {"timestamp": "2024-12-11T10:30:30", "endpoint": "/api/logs", "method": "GET", "status_code": 200, "duration_ms": 15.67, "client_ip": "127.0.0.1"}
+✅ Log guardado: /api/logs [GET] - 200
+INFO:     127.0.0.1:54327 - "GET /api/logs HTTP/1.1" 200 OK
+
+
+Cuando ocurre un ERROR (archivo sin texto):
+--------------------------------------------
+2024-12-11 10:30:35 - OCR_API - ERROR - ERROR en /api/classify - No se pudo extraer texto de los archivos - Data: {"timestamp": "2024-12-11T10:30:35", "endpoint": "/api/classify", "error_message": "No se pudo extraer texto de los archivos", "error_type": "ExtractionError", "traceback": null}
+❌ Log de error guardado: /api/classify - No se pudo extraer texto de los archivos
+
+2024-12-11 10:30:35 - OCR_API - INFO - [POST] /api/classify - Status: 400 - Duration: 234.56ms - Data: {"timestamp": "2024-12-11T10:30:35", "endpoint": "/api/classify", "method": "POST", "status_code": 400, "duration_ms": 234.56, "client_ip": "127.0.0.1"}
+✅ Log guardado: /api/classify [POST] - 400
+INFO:     127.0.0.1:54328 - "POST /api/classify HTTP/1.1" 400 Bad Request
+
+
+Cuando ocurre un ERROR INTERNO (500):
+--------------------------------------
+2024-12-11 10:30:40 - OCR_API - ERROR - ERROR en /api/classify - Database connection failed - Data: {"timestamp": "2024-12-11T10:30:40", "endpoint": "/api/classify", "error_message": "Database connection failed", "error_type": "DatabaseError", "traceback": "Traceback (most recent call last):\n  File \"src/api.py\", line 123, in classify_invoice\n    conn = psycopg2.connect(**db_config)\npsycopg2.OperationalError: could not connect to server"}
+❌ Log de error guardado: /api/classify - Database connection failed
+
+2024-12-11 10:30:40 - OCR_API - ERROR - [POST] /api/classify - Status: 500 - Duration: 56.78ms - Data: {"timestamp": "2024-12-11T10:30:40", "endpoint": "/api/classify", "method": "POST", "status_code": 500, "duration_ms": 56.78, "client_ip": "127.0.0.1"}
+✅ Log guardado: /api/classify [POST] - 500
+INFO:     127.0.0.1:54329 - "POST /api/classify HTTP/1.1" 500 Internal Server Error
+
+
+================================================================================
+RESUMEN DE LOGS EN ARCHIVOS
+================================================================================
+
+Archivo: logs/api_requests.log
+-------------------------------
+Contiene TODAS las peticiones HTTP con:
+- Timestamp completo
+- Endpoint y método
+- Status code
+- Duración en milisegundos
+- IP del cliente
+- Datos completos en JSON
+
+
+Archivo: logs/processed_files.log
+----------------------------------
+Contiene TODOS los archivos procesados con:
+- ID de factura
+- Nombres de archivos XML y PDF
+- Sucursal detectada
+- Unidad funcional detectada
+- Éxito o fallo del procesamiento
+- ID del historial
+
+
+Archivo: logs/statistics.log
+-----------------------------
+Contiene TODAS las consultas de estadísticas con:
+- Total de clasificaciones
+- Precisión del sistema
+- Confianza promedio por tipo
+
+
+================================================================================
+VENTAJAS DEL SISTEMA
+================================================================================
+
+✅ Cada operación muestra confirmación en consola
+✅ Logs detallados en archivos para análisis posterior
+✅ Diferentes niveles (INFO, WARNING, ERROR)
+✅ Timestamps precisos para auditoría
+✅ Datos completos en formato JSON
+✅ Fácil de leer y analizar
+✅ Integrable con herramientas de monitoreo
+
+================================================================================
