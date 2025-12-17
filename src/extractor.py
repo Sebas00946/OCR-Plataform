@@ -17,12 +17,12 @@ class InvoiceExtractor:
         'sts': 'dian:gov:co:facturaelectronica:Structures-2-1'
     }
     
-    def extract_from_xml(self, xml_path: str) -> Tuple[str, float]:
+    def extract_from_xml(self, xml_path: str) -> Tuple[str, float, Dict]:
         """
         Extrae texto del XML y calcula su calidad
         
         Returns:
-            Tuple[str, float]: (texto_extraido, calidad_0_a_1)
+            Tuple[str, float, Dict]: (texto_extraido, calidad_0_a_1, datos_estructurados)
         """
         try:
             tree = ET.parse(xml_path)
@@ -32,6 +32,9 @@ class InvoiceExtractor:
             quality_score = 0
             max_quality = 6  # Número de campos importantes
             
+            # Diccionario para datos estructurados
+            structured_data = {}
+            
             # 1. Proveedor (peso: 1)
             supplier = self._extract_text(root, [
                 './/cac:SenderParty//cbc:RegistrationName',
@@ -40,6 +43,45 @@ class InvoiceExtractor:
             if supplier:
                 parts.append(supplier)
                 quality_score += 1
+                structured_data['proveedor_nombre'] = supplier
+            
+            # Extraer NIT del proveedor
+            supplier_nit = self._extract_text(root, [
+                './/cac:AccountingSupplierParty//cac:Party//cac:PartyTaxScheme//cbc:CompanyID',
+                './/cac:AccountingSupplierParty//cac:Party//cac:PartyIdentification//cbc:ID'
+            ])
+            if supplier_nit:
+                structured_data['proveedor_nit'] = supplier_nit
+            
+            # Extraer dirección del proveedor
+            supplier_address = self._extract_text(root, [
+                './/cac:AccountingSupplierParty//cac:Party//cac:PhysicalLocation//cac:Address//cbc:Line',
+                './/cac:AccountingSupplierParty//cac:Party//cac:PostalAddress//cbc:Line'
+            ])
+            if supplier_address:
+                structured_data['proveedor_direccion'] = supplier_address
+            
+            # Extraer ciudad del proveedor
+            supplier_city = self._extract_text(root, [
+                './/cac:AccountingSupplierParty//cac:Party//cac:PhysicalLocation//cac:Address//cbc:CityName',
+                './/cac:AccountingSupplierParty//cac:Party//cac:PostalAddress//cbc:CityName'
+            ])
+            if supplier_city:
+                structured_data['proveedor_ciudad'] = supplier_city
+            
+            # Extraer teléfono del proveedor
+            supplier_phone = self._extract_text(root, [
+                './/cac:AccountingSupplierParty//cac:Party//cac:Contact//cbc:Telephone'
+            ])
+            if supplier_phone:
+                structured_data['proveedor_telefono'] = supplier_phone
+            
+            # Extraer email del proveedor
+            supplier_email = self._extract_text(root, [
+                './/cac:AccountingSupplierParty//cac:Party//cac:Contact//cbc:ElectronicMail'
+            ])
+            if supplier_email:
+                structured_data['proveedor_email'] = supplier_email
             
             # 2. Cliente (peso: 1)
             customer = self._extract_text(root, [
@@ -89,11 +131,11 @@ class InvoiceExtractor:
             # Unir todo el texto
             text = ' '.join(filter(None, parts))
             
-            return text.upper(), quality
+            return text.upper(), quality, structured_data
             
         except Exception as e:
             print(f"⚠️  Error al leer XML: {e}")
-            return "", 0.0
+            return "", 0.0, {}
     
     def extract_from_pdf(self, pdf_path: str) -> str:
         """
@@ -126,10 +168,11 @@ class InvoiceExtractor:
         xml_text = ""
         pdf_text = ""
         xml_quality = 0.0
+        structured_data = {}
         
         # Extraer XML si existe
         if xml_path:
-            xml_text, xml_quality = self.extract_from_xml(xml_path)
+            xml_text, xml_quality, structured_data = self.extract_from_xml(xml_path)
         
         # Extraer PDF si existe
         if pdf_path:
@@ -171,7 +214,8 @@ class InvoiceExtractor:
             'xml_weight': xml_weight,
             'pdf_weight': pdf_weight,
             'has_xml': bool(xml_text),
-            'has_pdf': bool(pdf_text)
+            'has_pdf': bool(pdf_text),
+            'proveedor': structured_data  # Datos estructurados del proveedor
         }
     
     def _extract_text(self, root, xpaths: list) -> str:

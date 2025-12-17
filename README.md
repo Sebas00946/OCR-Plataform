@@ -43,7 +43,7 @@ Documentación: `http://localhost:8000/docs`
 ```bash
 POST /api/classify
 ```
-Sube XML y/o PDF para clasificar automáticamente.
+Sube XML y/o PDF para clasificar automáticamente y extraer datos del proveedor.
 
 ### Validar Clasificación (Auto-aprendizaje)
 ```bash
@@ -104,6 +104,11 @@ python scripts/test_api.py
 python scripts/test_logging.py
 ```
 
+### Prueba de extracción de proveedor
+```bash
+python scripts/test_proveedor.py
+```
+
 ### Prueba completa de API
 ```bash
 python test_api_complete.py
@@ -113,6 +118,7 @@ python test_api_complete.py
 
 - ✅ Lee XML (60%) + PDF (40%) con pesos inteligentes
 - ✅ Clasifica sucursal y unidad funcional automáticamente
+- ✅ Extrae datos del proveedor (nombre, NIT, dirección, ciudad, teléfono, email)
 - ✅ Sistema de auto-aprendizaje
 - ✅ Keywords parametrizables en base de datos
 - ✅ API REST lista para Node.js
@@ -194,5 +200,6 @@ curl http://localhost:8000/api/logs
 - **Documentación API**: http://localhost:8000/docs
 - **Health Check**: http://localhost:8000/api/health
 - **Logs del Sistema**: http://localhost:8000/api/logs
+- **Extracción de Proveedor**: Ver `EXTRACCION_PROVEEDOR.md`
 - **Integración Node.js**: Ver `INTEGRACION_NODEJS.md`
 - **Sistema de Logging**: Ver `LOGGING_SISTEMA.md`

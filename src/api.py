@@ -79,6 +79,7 @@ class ClassificationResponse(BaseModel):
     success: bool
     sucursal: Optional[dict]
     unidad_funcional: Optional[dict]
+    proveedor: Optional[dict]
     metadata: dict
     historial_id: Optional[int] = None
 
@@ -226,6 +227,7 @@ async def classify_invoice(
             success=sucursal['success'] and unidad['success'],
             sucursal=sucursal if sucursal['success'] else None,
             unidad_funcional=unidad if unidad['success'] else None,
+            proveedor=data.get('proveedor', {}),
             historial_id=historial_id,
             metadata={
                 'xml_quality': data['xml_quality'],
