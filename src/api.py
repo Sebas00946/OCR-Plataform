@@ -283,16 +283,19 @@ async def validate_classification(validation: ValidationRequest):
             es_correcta=validation.es_correcta,
             sucursal_correcta_id=validation.sucursal_correcta_id,
             unidad_correcta_id=validation.unidad_correcta_id,
-            observaciones=validation.observaciones
+            observaciones=validation.observaciones,
+            auto_add_keywords=True  # Agregar keywords automáticamente
         )
-        
-        message = "Clasificación correcta - Keywords reforzadas" if validation.es_correcta else "Clasificación incorrecta - Sugerencias generadas"
         
         return {
             "success": True,
-            "message": message,
-            "keywords_reforzadas": result.get('keywords_reforzadas', 0),
-            "sugerencias": result.get('sugerencias', [])
+            "message": result.get('message', ''),
+            "learning": {
+                "weights_adjusted": result.get('weights_adjusted', False),
+                "keywords_reforzadas": result.get('keywords_reforzadas', 0),
+                "keywords_added": result.get('keywords_added', []),
+                "keywords_suggested": result.get('keywords_suggested', [])
+            }
         }
     
     except Exception as e:

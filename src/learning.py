@@ -78,10 +78,19 @@ class LearningSystem:
         es_correcta: bool,
         sucursal_correcta_id: Optional[int] = None,
         unidad_correcta_id: Optional[int] = None,
-        observaciones: Optional[str] = None
+        observaciones: Optional[str] = None,
+        auto_add_keywords: bool = True
     ) -> Dict:
         """
         Valida una clasificación y aprende de ella
+        
+        Args:
+            historial_id: ID del historial de clasificación
+            es_correcta: Si la clasificación fue correcta
+            sucursal_correcta_id: ID de la sucursal correcta (si fue incorrecta)
+            unidad_correcta_id: ID de la unidad correcta (si fue incorrecta)
+            observaciones: Comentarios adicionales
+            auto_add_keywords: Si debe agregar keywords automáticamente
         
         Returns:
             Dict con acciones de aprendizaje realizadas
@@ -90,36 +99,58 @@ class LearningSystem:
         cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         
         try:
-            # Actualizar historial
+            # Actualizar historial con la clasificación correcta
             cursor.execute("""
                 UPDATE ocr_clasificacion_historial
                 SET clasificacion_correcta = %s,
-                    observaciones = %s
+                    sucursal_correcta_id = %s,
+                    unidad_correcta_id = %s,
+                    observaciones = %s,
+                    fecha_validacion = NOW()
                 WHERE id = %s
-            """, (es_correcta, observaciones, historial_id))
+            """, (es_correcta, sucursal_correcta_id, unidad_correcta_id, observaciones, historial_id))
             
             conn.commit()
             
             learning_actions = {
                 'weights_adjusted': False,
+                'keywords_added': [],
                 'keywords_suggested': [],
                 'message': ''
             }
             
             if es_correcta:
                 # Clasificación correcta: reforzar keywords
-                learning_actions['weights_adjusted'] = self._reinforce_keywords(
+                keywords_reforzadas = self._reinforce_keywords(
                     cursor, conn, historial_id
                 )
-                learning_actions['message'] = 'Keywords reforzadas exitosamente'
+                learning_actions['weights_adjusted'] = keywords_reforzadas > 0
+                learning_actions['keywords_reforzadas'] = keywords_reforzadas
+                learning_actions['message'] = f'✅ {keywords_reforzadas} keywords reforzadas'
             
             else:
                 # Clasificación incorrecta: aprender de la corrección
                 if sucursal_correcta_id or unidad_correcta_id:
-                    learning_actions['keywords_suggested'] = self._suggest_new_keywords(
+                    # Extraer keywords del texto
+                    keywords_extraidas = self._extract_smart_keywords(
                         cursor, historial_id, sucursal_correcta_id, unidad_correcta_id
                     )
-                    learning_actions['message'] = 'Se sugieren nuevas keywords para mejorar'
+                    
+                    if auto_add_keywords and keywords_extraidas:
+                        # Agregar keywords automáticamente
+                        keywords_agregadas = self._add_keywords_automatically(
+                            cursor, conn, keywords_extraidas, 
+                            sucursal_correcta_id, unidad_correcta_id
+                        )
+                        learning_actions['keywords_added'] = keywords_agregadas
+                        learning_actions['message'] = f'🎓 {len(keywords_agregadas)} keywords agregadas automáticamente'
+                    else:
+                        # Solo sugerir keywords
+                        learning_actions['keywords_suggested'] = keywords_extraidas
+                        learning_actions['message'] = f'💡 {len(keywords_extraidas)} keywords sugeridas'
+                    
+                    # Reducir peso de keywords incorrectas
+                    self._penalize_wrong_keywords(cursor, conn, historial_id)
             
             return learning_actions
             
@@ -127,12 +158,12 @@ class LearningSystem:
             cursor.close()
             conn.close()
     
-    def _reinforce_keywords(self, cursor, conn, historial_id: int) -> bool:
+    def _reinforce_keywords(self, cursor, conn, historial_id: int) -> int:
         """
         Refuerza (aumenta peso) de las keywords que funcionaron
         
         Returns:
-            True si se ajustaron pesos
+            Número de keywords reforzadas
         """
         try:
             # Obtener keywords que funcionaron
@@ -144,38 +175,46 @@ class LearningSystem:
             
             row = cursor.fetchone()
             if not row:
-                return False
+                return 0
             
             keywords_data = row['keywords_encontradas']
             sucursal_id = row['sucursal_detectada_id']
             unidad_id = row['unidad_funcional_detectada_id']
             
+            count = 0
+            
             # Aumentar peso de keywords de sucursal (máximo 10)
             if sucursal_id and keywords_data.get('sucursal'):
-                for keyword in keywords_data['sucursal'][:3]:  # Top 3
+                for keyword in keywords_data['sucursal'][:5]:  # Top 5
                     cursor.execute("""
                         UPDATE ocr_sucursal_keywords
-                        SET peso = LEAST(peso + 1, 10)
+                        SET peso = LEAST(peso + 1, 10),
+                            updated_at = NOW()
                         WHERE sucursal_id = %s AND keyword = %s
                     """, (sucursal_id, keyword))
+                    if cursor.rowcount > 0:
+                        count += 1
             
             # Aumentar peso de keywords de unidad (máximo 10)
             if unidad_id and keywords_data.get('unidad'):
-                for keyword in keywords_data['unidad'][:3]:  # Top 3
+                for keyword in keywords_data['unidad'][:5]:  # Top 5
                     cursor.execute("""
                         UPDATE ocr_unidad_keywords
-                        SET peso = LEAST(peso + 1, 10)
+                        SET peso = LEAST(peso + 1, 10),
+                            updated_at = NOW()
                         WHERE unidad_funcional_id = %s AND keyword = %s
                     """, (unidad_id, keyword))
+                    if cursor.rowcount > 0:
+                        count += 1
             
             conn.commit()
-            return True
+            return count
             
         except Exception as e:
             print(f"Error al reforzar keywords: {e}")
-            return False
+            return 0
     
-    def _suggest_new_keywords(
+    def _extract_smart_keywords(
         self,
         cursor,
         historial_id: int,
@@ -183,49 +222,271 @@ class LearningSystem:
         unidad_correcta_id: Optional[int]
     ) -> list:
         """
-        Sugiere nuevas keywords basadas en clasificación incorrecta
+        Extrae keywords inteligentes del texto de la factura
         
         Returns:
-            Lista de keywords sugeridas
+            Lista de keywords extraídas con metadatos
         """
-        suggestions = []
+        keywords = []
         
         try:
-            # Obtener datos extraídos
+            # Obtener datos extraídos y nombre de la entidad correcta
             cursor.execute("""
-                SELECT datos_extraidos
+                SELECT 
+                    h.datos_extraidos,
+                    s.nombre as sucursal_nombre,
+                    s.codigo as sucursal_codigo,
+                    uf.nombre as unidad_nombre,
+                    uf.codigo as unidad_codigo
+                FROM ocr_clasificacion_historial h
+                LEFT JOIN sucursales s ON s.id = %s
+                LEFT JOIN unidades_funcionales uf ON uf.id = %s
+                WHERE h.id = %s
+            """, (sucursal_correcta_id, unidad_correcta_id, historial_id))
+            
+            row = cursor.fetchone()
+            if not row or not row['datos_extraidos']:
+                return keywords
+            
+            text = row['datos_extraidos'].get('text', '').upper()
+            
+            # 1. Extraer códigos numéricos (ej: 0010, 0055)
+            import re
+            codigos = re.findall(r'\b\d{4}\b', text)
+            for codigo in set(codigos):
+                keywords.append({
+                    'keyword': codigo,
+                    'tipo': 'unidad' if unidad_correcta_id else 'sucursal',
+                    'entity_id': unidad_correcta_id or sucursal_correcta_id,
+                    'peso_sugerido': 8,
+                    'razon': 'Código numérico encontrado'
+                })
+            
+            # 2. Extraer códigos cortos (ej: TJA, FLA, NVA)
+            codigos_cortos = re.findall(r'\b[A-Z]{3}\b', text)
+            for codigo in set(codigos_cortos):
+                # Evitar palabras comunes
+                if codigo not in ['SAS', 'NIT', 'TEL', 'FAX', 'IVA']:
+                    keywords.append({
+                        'keyword': codigo,
+                        'tipo': 'sucursal' if sucursal_correcta_id else 'unidad',
+                        'entity_id': sucursal_correcta_id or unidad_correcta_id,
+                        'peso_sugerido': 9,
+                        'razon': 'Código corto encontrado'
+                    })
+            
+            # 3. Buscar nombre de la entidad en el texto
+            if sucursal_correcta_id and row['sucursal_nombre']:
+                nombre_parts = row['sucursal_nombre'].upper().split()
+                for part in nombre_parts:
+                    if len(part) >= 4 and part in text:
+                        # Evitar palabras muy comunes
+                        if part not in ['CLINICA', 'MEDILASER', 'S.A.S']:
+                            keywords.append({
+                                'keyword': part,
+                                'tipo': 'sucursal',
+                                'entity_id': sucursal_correcta_id,
+                                'peso_sugerido': 10,
+                                'razon': f'Parte del nombre de sucursal'
+                            })
+            
+            if unidad_correcta_id and row['unidad_nombre']:
+                nombre_parts = row['unidad_nombre'].upper().split()
+                for part in nombre_parts:
+                    if len(part) >= 4 and part in text:
+                        if part not in ['ALMACEN', 'ADMINISTRACION']:
+                            keywords.append({
+                                'keyword': part,
+                                'tipo': 'unidad',
+                                'entity_id': unidad_correcta_id,
+                                'peso_sugerido': 9,
+                                'razon': f'Parte del nombre de unidad'
+                            })
+            
+            # 4. Buscar frases específicas (ej: "MEDILASER TUNJA", "TJA MED")
+            frases_comunes = [
+                r'MEDILASER\s+\w+',
+                r'\w+\s+MED',
+                r'SEDE\s+\w+',
+                r'FACTURACION\s+\w+',
+            ]
+            
+            for patron in frases_comunes:
+                matches = re.findall(patron, text)
+                for match in set(matches):
+                    if len(match) <= 50:  # Evitar frases muy largas
+                        keywords.append({
+                            'keyword': match,
+                            'tipo': 'unidad' if unidad_correcta_id else 'sucursal',
+                            'entity_id': unidad_correcta_id or sucursal_correcta_id,
+                            'peso_sugerido': 9,
+                            'razon': 'Frase específica encontrada'
+                        })
+            
+            # 5. Eliminar duplicados
+            keywords_unicos = []
+            keywords_vistos = set()
+            for kw in keywords:
+                if kw['keyword'] not in keywords_vistos:
+                    keywords_vistos.add(kw['keyword'])
+                    keywords_unicos.append(kw)
+            
+            return keywords_unicos[:10]  # Máximo 10 keywords
+            
+        except Exception as e:
+            print(f"Error al extraer keywords: {e}")
+            import traceback
+            traceback.print_exc()
+            return keywords
+    
+    def _add_keywords_automatically(
+        self,
+        cursor,
+        conn,
+        keywords: list,
+        sucursal_correcta_id: Optional[int],
+        unidad_correcta_id: Optional[int]
+    ) -> list:
+        """
+        Agrega keywords automáticamente a la base de datos
+        
+        Returns:
+            Lista de keywords agregadas exitosamente
+        """
+        keywords_agregadas = []
+        
+        try:
+            for kw in keywords:
+                keyword = kw['keyword']
+                peso = kw['peso_sugerido']
+                tipo = kw['tipo']
+                entity_id = kw['entity_id']
+                
+                try:
+                    if tipo == 'sucursal' and sucursal_correcta_id:
+                        # Verificar si ya existe
+                        cursor.execute("""
+                            SELECT peso FROM ocr_sucursal_keywords
+                            WHERE sucursal_id = %s AND keyword = %s
+                        """, (entity_id, keyword))
+                        
+                        existing = cursor.fetchone()
+                        
+                        if existing:
+                            # Ya existe, solo aumentar peso si es menor
+                            if existing['peso'] < peso:
+                                cursor.execute("""
+                                    UPDATE ocr_sucursal_keywords
+                                    SET peso = %s, updated_at = NOW()
+                                    WHERE sucursal_id = %s AND keyword = %s
+                                """, (peso, entity_id, keyword))
+                                keywords_agregadas.append({
+                                    **kw,
+                                    'accion': 'actualizada',
+                                    'peso_anterior': existing['peso']
+                                })
+                        else:
+                            # No existe, agregar
+                            cursor.execute("""
+                                INSERT INTO ocr_sucursal_keywords 
+                                (sucursal_id, keyword, peso, activo)
+                                VALUES (%s, %s, %s, TRUE)
+                            """, (entity_id, keyword, peso))
+                            keywords_agregadas.append({
+                                **kw,
+                                'accion': 'agregada'
+                            })
+                    
+                    elif tipo == 'unidad' and unidad_correcta_id:
+                        # Verificar si ya existe
+                        cursor.execute("""
+                            SELECT peso FROM ocr_unidad_keywords
+                            WHERE unidad_funcional_id = %s AND keyword = %s
+                        """, (entity_id, keyword))
+                        
+                        existing = cursor.fetchone()
+                        
+                        if existing:
+                            # Ya existe, solo aumentar peso si es menor
+                            if existing['peso'] < peso:
+                                cursor.execute("""
+                                    UPDATE ocr_unidad_keywords
+                                    SET peso = %s, updated_at = NOW()
+                                    WHERE unidad_funcional_id = %s AND keyword = %s
+                                """, (peso, entity_id, keyword))
+                                keywords_agregadas.append({
+                                    **kw,
+                                    'accion': 'actualizada',
+                                    'peso_anterior': existing['peso']
+                                })
+                        else:
+                            # No existe, agregar
+                            cursor.execute("""
+                                INSERT INTO ocr_unidad_keywords 
+                                (unidad_funcional_id, keyword, peso, activo)
+                                VALUES (%s, %s, %s, TRUE)
+                            """, (entity_id, keyword, peso))
+                            keywords_agregadas.append({
+                                **kw,
+                                'accion': 'agregada'
+                            })
+                
+                except Exception as e:
+                    print(f"Error al agregar keyword '{keyword}': {e}")
+                    continue
+            
+            conn.commit()
+            return keywords_agregadas
+            
+        except Exception as e:
+            print(f"Error al agregar keywords automáticamente: {e}")
+            conn.rollback()
+            return keywords_agregadas
+    
+    def _penalize_wrong_keywords(self, cursor, conn, historial_id: int):
+        """
+        Reduce el peso de keywords que llevaron a una clasificación incorrecta
+        """
+        try:
+            # Obtener keywords que fallaron
+            cursor.execute("""
+                SELECT keywords_encontradas, sucursal_detectada_id, unidad_funcional_detectada_id
                 FROM ocr_clasificacion_historial
                 WHERE id = %s
             """, (historial_id,))
             
             row = cursor.fetchone()
-            if not row or not row['datos_extraidos']:
-                return suggestions
+            if not row:
+                return
             
-            # Analizar texto para sugerir keywords
-            # (Implementación básica - puede mejorarse con NLP)
-            text = row['datos_extraidos'].get('text', '')
+            keywords_data = row['keywords_encontradas']
+            sucursal_id = row['sucursal_detectada_id']
+            unidad_id = row['unidad_funcional_detectada_id']
             
-            # Extraer palabras únicas de 4+ caracteres
-            words = set()
-            for word in text.split():
-                if len(word) >= 4 and word.isalpha():
-                    words.add(word)
+            # Reducir peso de keywords de sucursal (mínimo 1)
+            if sucursal_id and keywords_data.get('sucursal'):
+                for keyword in keywords_data['sucursal'][:3]:  # Top 3 que fallaron
+                    cursor.execute("""
+                        UPDATE ocr_sucursal_keywords
+                        SET peso = GREATEST(peso - 1, 1),
+                            updated_at = NOW()
+                        WHERE sucursal_id = %s AND keyword = %s
+                    """, (sucursal_id, keyword))
             
-            # Sugerir top 5 palabras más frecuentes
-            for word in list(words)[:5]:
-                suggestions.append({
-                    'keyword': word,
-                    'tipo': 'sucursal' if sucursal_correcta_id else 'unidad',
-                    'id': sucursal_correcta_id or unidad_correcta_id,
-                    'peso_sugerido': 5
-                })
+            # Reducir peso de keywords de unidad (mínimo 1)
+            if unidad_id and keywords_data.get('unidad'):
+                for keyword in keywords_data['unidad'][:3]:  # Top 3 que fallaron
+                    cursor.execute("""
+                        UPDATE ocr_unidad_keywords
+                        SET peso = GREATEST(peso - 1, 1),
+                            updated_at = NOW()
+                        WHERE unidad_funcional_id = %s AND keyword = %s
+                    """, (unidad_id, keyword))
             
-            return suggestions
+            conn.commit()
             
         except Exception as e:
-            print(f"Error al sugerir keywords: {e}")
-            return suggestions
+            print(f"Error al penalizar keywords: {e}")
     
     def get_statistics(self) -> Dict:
         """Obtiene estadísticas del sistema"""
