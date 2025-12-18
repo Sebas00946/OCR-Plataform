@@ -200,6 +200,11 @@ curl http://localhost:8000/api/logs
 - **Documentación API**: http://localhost:8000/docs
 - **Health Check**: http://localhost:8000/api/health
 - **Logs del Sistema**: http://localhost:8000/api/logs
-- **Extracción de Proveedor**: Ver `EXTRACCION_PROVEEDOR.md`
-- **Integración Node.js**: Ver `INTEGRACION_NODEJS.md`
-- **Sistema de Logging**: Ver `LOGGING_SISTEMA.md`
+
+**📚 Documentación:**
+- **📋 Índice General**: `INDICE_DOCUMENTACION.md` - Ver toda la documentación
+- **⭐ Resumen para Node.js**: `RESUMEN_PARA_NODEJS.md` - Empieza aquí
+- **Guía completa Node.js**: `GUIA_INTEGRACION_NODEJS.md`
+- **Arquitectura del Sistema**: `ARQUITECTURA_SISTEMA.md`
+- **Extracción de Proveedor**: `EXTRACCION_PROVEEDOR.md`
+- **Sistema de Logging**: `LOGGING_SISTEMA.md`

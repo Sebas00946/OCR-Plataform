@@ -17,6 +17,7 @@ from .classifier import PDFClassifier
 from .extractor import InvoiceExtractor
 from .learning import LearningSystem
 from .logger import ocr_logger
+from .proveedor_matcher import ProveedorMatcher
 
 # Crear app
 app = FastAPI(
@@ -39,6 +40,7 @@ db_config = get_db_config()
 classifier = PDFClassifier(db_config)
 extractor = InvoiceExtractor()
 learning_system = LearningSystem(db_config)
+proveedor_matcher = ProveedorMatcher(db_config)
 
 
 # ============================================
@@ -80,6 +82,7 @@ class ClassificationResponse(BaseModel):
     sucursal: Optional[dict]
     unidad_funcional: Optional[dict]
     proveedor: Optional[dict]
+    proveedor_match: Optional[dict]  # Información del match con la BD
     metadata: dict
     historial_id: Optional[int] = None
 
@@ -202,6 +205,9 @@ async def classify_invoice(
             pdf_weight=data['pdf_weight']
         )
         
+        # Buscar y relacionar proveedor automáticamente
+        proveedor_match = proveedor_matcher.match_proveedor(data.get('proveedor', {}))
+        
         # Guardar en historial (inmediatamente para obtener el ID)
         archivo_nombre = pdf_filename if pdf_filename else xml_filename
         historial_id = learning_system.save_classification(
@@ -209,6 +215,7 @@ async def classify_invoice(
             archivo_nombre=archivo_nombre,
             sucursal=sucursal,
             unidad=unidad,
+            proveedor_match=proveedor_match,
             metadata=data
         )
         
@@ -228,6 +235,7 @@ async def classify_invoice(
             sucursal=sucursal if sucursal['success'] else None,
             unidad_funcional=unidad if unidad['success'] else None,
             proveedor=data.get('proveedor', {}),
+            proveedor_match=proveedor_match,
             historial_id=historial_id,
             metadata={
                 'xml_quality': data['xml_quality'],
