@@ -33,17 +33,21 @@ class InvoiceExtractor:
             max_quality = 6  # Número de campos importantes
             
             # Diccionario para datos estructurados
-            structured_data = {}
+            structured_data = {
+                'proveedor': {}
+            }
             
             # 1. Proveedor (peso: 1)
             supplier = self._extract_text(root, [
+                './/cac:AccountingSupplierParty//cac:Party//cac:PartyName//cbc:Name',
+                './/cac:AccountingSupplierParty//cac:Party//cac:PartyLegalEntity//cbc:RegistrationName',
                 './/cac:SenderParty//cbc:RegistrationName',
                 './/cac:AccountingSupplierParty//cbc:RegistrationName'
             ])
             if supplier:
                 parts.append(supplier)
                 quality_score += 1
-                structured_data['proveedor_nombre'] = supplier
+                structured_data['proveedor']['nombre'] = supplier
             
             # Extraer NIT del proveedor
             supplier_nit = self._extract_text(root, [
@@ -51,7 +55,10 @@ class InvoiceExtractor:
                 './/cac:AccountingSupplierParty//cac:Party//cac:PartyIdentification//cbc:ID'
             ])
             if supplier_nit:
-                structured_data['proveedor_nit'] = supplier_nit
+                # Limpiar NIT (remover guiones, espacios, etc.)
+                supplier_nit_clean = supplier_nit.replace('-', '').replace('.', '').replace(' ', '').strip()
+                structured_data['proveedor']['nit'] = supplier_nit_clean
+                structured_data['proveedor']['nit_original'] = supplier_nit
             
             # Extraer dirección del proveedor
             supplier_address = self._extract_text(root, [
@@ -59,7 +66,7 @@ class InvoiceExtractor:
                 './/cac:AccountingSupplierParty//cac:Party//cac:PostalAddress//cbc:Line'
             ])
             if supplier_address:
-                structured_data['proveedor_direccion'] = supplier_address
+                structured_data['proveedor']['direccion'] = supplier_address
             
             # Extraer ciudad del proveedor
             supplier_city = self._extract_text(root, [
@@ -67,46 +74,58 @@ class InvoiceExtractor:
                 './/cac:AccountingSupplierParty//cac:Party//cac:PostalAddress//cbc:CityName'
             ])
             if supplier_city:
-                structured_data['proveedor_ciudad'] = supplier_city
+                structured_data['proveedor']['ciudad'] = supplier_city
             
             # Extraer teléfono del proveedor
             supplier_phone = self._extract_text(root, [
                 './/cac:AccountingSupplierParty//cac:Party//cac:Contact//cbc:Telephone'
             ])
             if supplier_phone:
-                structured_data['proveedor_telefono'] = supplier_phone
+                structured_data['proveedor']['telefono'] = supplier_phone
             
             # Extraer email del proveedor
             supplier_email = self._extract_text(root, [
                 './/cac:AccountingSupplierParty//cac:Party//cac:Contact//cbc:ElectronicMail'
             ])
             if supplier_email:
-                structured_data['proveedor_email'] = supplier_email
+                structured_data['proveedor']['email'] = supplier_email
             
             # 2. Cliente (peso: 1)
             customer = self._extract_text(root, [
                 './/cac:ReceiverParty//cbc:RegistrationName',
-                './/cac:AccountingCustomerParty//cbc:RegistrationName'
+                './/cac:AccountingCustomerParty//cbc:RegistrationName',
+                './/cac:AccountingCustomerParty//cac:Party//cac:PartyName//cbc:Name'
             ])
             if customer:
                 parts.append(customer)
                 quality_score += 1
             
-            # 3. Dirección (peso: 1)
+            # 3. Dirección de entrega (PESO ALTO - 3x para priorizar)
+            # Esta es la información más importante para determinar la sucursal
             address = self._extract_text(root, [
+                './/cac:Delivery//cac:DeliveryLocation//cac:Address//cbc:Line',
+                './/cac:Delivery//cac:DeliveryAddress//cbc:Line',
                 './/cac:AccountingCustomerParty//cac:Address//cbc:Line',
                 './/cac:ReceiverParty//cac:Address//cbc:Line'
             ])
             if address:
+                # Repetir 3 veces para dar más peso
+                parts.append(address)
+                parts.append(address)
                 parts.append(address)
                 quality_score += 1
             
-            # 4. Ciudad (peso: 1)
+            # 4. Ciudad de entrega (PESO ALTO - 3x para priorizar)
             city = self._extract_text(root, [
+                './/cac:Delivery//cac:DeliveryLocation//cac:Address//cbc:CityName',
+                './/cac:Delivery//cac:DeliveryAddress//cbc:CityName',
                 './/cac:AccountingCustomerParty//cac:Address//cbc:CityName',
                 './/cac:ReceiverParty//cac:Address//cbc:CityName'
             ])
             if city:
+                # Repetir 3 veces para dar más peso
+                parts.append(city)
+                parts.append(city)
                 parts.append(city)
                 quality_score += 1
             

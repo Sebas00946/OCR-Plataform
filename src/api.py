@@ -178,24 +178,79 @@ async def classify_invoice(
         # Guardar archivos temporalmente
         if xml_file:
             xml_filename = xml_file.filename
+            # Verificar que el archivo no esté vacío
+            xml_file.file.seek(0, 2)  # Ir al final
+            xml_size = xml_file.file.tell()
+            xml_file.file.seek(0)  # Volver al inicio
+            
+            if xml_size == 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"El archivo XML '{xml_filename}' está vacío (0 bytes)"
+                )
+            
+            ocr_logger.logger.debug(f"XML recibido: {xml_filename} ({xml_size} bytes)")
             xml_path = _save_temp_file(xml_file, ".xml")
         
         if pdf_file:
             pdf_filename = pdf_file.filename
+            # Verificar que el archivo no esté vacío
+            pdf_file.file.seek(0, 2)  # Ir al final
+            pdf_size = pdf_file.file.tell()
+            pdf_file.file.seek(0)  # Volver al inicio
+            
+            if pdf_size == 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"El archivo PDF '{pdf_filename}' está vacío (0 bytes)"
+                )
+            
+            ocr_logger.logger.debug(f"PDF recibido: {pdf_filename} ({pdf_size} bytes)")
             pdf_path = _save_temp_file(pdf_file, ".pdf")
         
         # Extraer texto
-        data = extractor.extract_combined(xml_path, pdf_path)
+        try:
+            data = extractor.extract_combined(xml_path, pdf_path)
+            
+            # Log de debugging
+            ocr_logger.logger.debug(f"Extracción completada: xml_path={xml_path}, pdf_path={pdf_path}")
+            ocr_logger.logger.debug(f"Texto extraído: {len(data.get('text', ''))} caracteres")
+            ocr_logger.logger.debug(f"XML: {len(data.get('xml_text', ''))} chars, PDF: {len(data.get('pdf_text', ''))} chars")
+            
+        except Exception as e:
+            import traceback
+            ocr_logger.log_error(
+                endpoint="/api/classify",
+                error_message=f"Error al extraer texto: {str(e)}",
+                error_type="ExtractionError",
+                traceback_info=traceback.format_exc()
+            )
+            raise HTTPException(
+                status_code=500,
+                detail=f"Error al extraer texto: {str(e)}"
+            )
         
-        if not data['text']:
+        if not data.get('text'):
+            error_detail = {
+                'xml_path': xml_path,
+                'pdf_path': pdf_path,
+                'xml_exists': xml_path and os.path.exists(xml_path) if xml_path else False,
+                'pdf_exists': pdf_path and os.path.exists(pdf_path) if pdf_path else False,
+                'xml_size': os.path.getsize(xml_path) if xml_path and os.path.exists(xml_path) else 0,
+                'pdf_size': os.path.getsize(pdf_path) if pdf_path and os.path.exists(pdf_path) else 0,
+                'has_xml_text': bool(data.get('xml_text')),
+                'has_pdf_text': bool(data.get('pdf_text'))
+            }
+            
             ocr_logger.log_error(
                 endpoint="/api/classify",
                 error_message="No se pudo extraer texto de los archivos",
-                error_type="ExtractionError"
+                error_type="ExtractionError",
+                traceback_info=str(error_detail)
             )
             raise HTTPException(
                 status_code=400,
-                detail="No se pudo extraer texto de los archivos"
+                detail=f"No se pudo extraer texto de los archivos. Detalles: {error_detail}"
             )
         
         # Clasificar
@@ -206,7 +261,12 @@ async def classify_invoice(
         )
         
         # Buscar y relacionar proveedor automáticamente
-        proveedor_match = proveedor_matcher.match_proveedor(data.get('proveedor', {}))
+        proveedor_data = data.get('proveedor', {})
+        if isinstance(proveedor_data, dict) and 'proveedor' in proveedor_data:
+            # Si viene anidado, extraer el diccionario interno
+            proveedor_data = proveedor_data.get('proveedor', {})
+        
+        proveedor_match = proveedor_matcher.match_proveedor(proveedor_data)
         
         # Guardar en historial (inmediatamente para obtener el ID)
         archivo_nombre = pdf_filename if pdf_filename else xml_filename
@@ -215,8 +275,9 @@ async def classify_invoice(
             archivo_nombre=archivo_nombre,
             sucursal=sucursal,
             unidad=unidad,
-            proveedor_match=proveedor_match,
-            metadata=data
+            metadata=data,
+            proveedor_id=proveedor_match.get('proveedor_id') if proveedor_match else None,
+            confianza_proveedor=proveedor_match.get('confidence') if proveedor_match else None
         )
         
         # Registrar procesamiento de archivos

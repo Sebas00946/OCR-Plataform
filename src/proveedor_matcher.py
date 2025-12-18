@@ -28,10 +28,16 @@ class ProveedorMatcher:
         Args:
             proveedor_data: Datos extraídos del XML
                 {
+                    'nombre': 'DISTRIBUIDORA EJEMPLO S.A.S',
+                    'nit': '900123456',
+                    'direccion': '...',
+                    'ciudad': '...'
+                }
+                O formato antiguo:
+                {
                     'proveedor_nombre': 'DISTRIBUIDORA EJEMPLO S.A.S',
                     'proveedor_nit': '900123456-7',
-                    'proveedor_direccion': '...',
-                    'proveedor_ciudad': '...'
+                    ...
                 }
         
         Returns:
@@ -45,7 +51,7 @@ class ProveedorMatcher:
                 'datos_extraidos': {...}
             }
         """
-        if not proveedor_data:
+        if not proveedor_data or not isinstance(proveedor_data, dict):
             return {
                 'matched': False,
                 'proveedor_id': None,
@@ -55,17 +61,31 @@ class ProveedorMatcher:
                 'datos_extraidos': {}
             }
         
+        # Normalizar datos (soportar ambos formatos)
+        nit = proveedor_data.get('nit') or proveedor_data.get('proveedor_nit')
+        nombre = proveedor_data.get('nombre') or proveedor_data.get('proveedor_nombre')
+        
+        if not nit and not nombre:
+            return {
+                'matched': False,
+                'proveedor_id': None,
+                'confidence': 0.0,
+                'match_method': None,
+                'proveedor_info': None,
+                'datos_extraidos': proveedor_data
+            }
+        
         conn = psycopg2.connect(**self.db_config)
         cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         
         try:
             # 1. Intentar match por NIT (más confiable)
-            if 'proveedor_nit' in proveedor_data:
-                result = self._match_by_nit(cursor, proveedor_data['proveedor_nit'])
+            if nit:
+                result = self._match_by_nit(cursor, nit)
                 if result:
                     return {
                         'matched': True,
-                        'proveedor_id': result['proveedor_id'],
+                        'proveedor_id': result['id'],
                         'confidence': 1.0,  # 100% confianza con NIT
                         'match_method': 'nit_exacto',
                         'proveedor_info': dict(result),
@@ -73,12 +93,12 @@ class ProveedorMatcher:
                     }
             
             # 2. Intentar match por nombre (menos confiable)
-            if 'proveedor_nombre' in proveedor_data:
-                result, confidence = self._match_by_nombre(cursor, proveedor_data['proveedor_nombre'])
+            if nombre:
+                result, confidence = self._match_by_nombre(cursor, nombre)
                 if result and confidence >= 0.85:  # Mínimo 85% similitud
                     return {
                         'matched': True,
-                        'proveedor_id': result['proveedor_id'],
+                        'proveedor_id': result['id'],
                         'confidence': confidence,
                         'match_method': 'nombre_similar',
                         'proveedor_info': dict(result),
@@ -114,27 +134,53 @@ class ProveedorMatcher:
         # Limpiar NIT (quitar guiones, puntos, espacios)
         nit_limpio = re.sub(r'[^0-9]', '', nit)
         
-        # Buscar en ocr_proveedor_config
+        # Buscar primero en tabla proveedores
         try:
             cursor.execute("""
                 SELECT 
-                    opc.proveedor_id,
+                    p.id,
+                    p.nit,
+                    p.razon_social,
+                    p.nombre_comercial,
+                    p.email,
+                    p.telefono,
+                    p.direccion,
+                    p.activo
+                FROM proveedores p
+                WHERE REPLACE(REPLACE(REPLACE(p.nit, '-', ''), '.', ''), ' ', '') = %s
+                    AND p.activo = TRUE
+                LIMIT 1
+            """, (nit_limpio,))
+            
+            result = cursor.fetchone()
+            if result:
+                return result
+        except Exception as e:
+            print(f"⚠️  Error al buscar en proveedores: {e}")
+        
+        # Si no se encuentra, buscar en ocr_proveedor_config
+        try:
+            cursor.execute("""
+                SELECT 
+                    opc.proveedor_id as id,
                     opc.nit,
-                    opc.nombre_completo,
-                    opc.alias,
-                    opc.formato_preferido,
-                    opc.requiere_validacion
+                    opc.nombre_completo as razon_social,
+                    opc.nombre_completo as nombre_comercial,
+                    NULL as email,
+                    NULL as telefono,
+                    NULL as direccion,
+                    opc.activo
                 FROM ocr_proveedor_config opc
                 WHERE REPLACE(REPLACE(REPLACE(opc.nit, '-', ''), '.', ''), ' ', '') = %s
                     AND opc.activo = TRUE
                 LIMIT 1
             """, (nit_limpio,))
+            
+            result = cursor.fetchone()
+            return result
         except Exception as e:
             print(f"⚠️  Error al buscar en ocr_proveedor_config: {e}")
             return None
-        
-        result = cursor.fetchone()
-        return result
     
     def _match_by_nombre(self, cursor, nombre: str) -> Tuple[Optional[Dict], float]:
         """
@@ -149,18 +195,20 @@ class ProveedorMatcher:
         """
         nombre_limpio = self._limpiar_nombre(nombre)
         
-        # Obtener todos los proveedores activos
+        # Obtener todos los proveedores activos de la tabla proveedores
         try:
             cursor.execute("""
                 SELECT 
-                    opc.proveedor_id,
-                    opc.nit,
-                    opc.nombre_completo,
-                    opc.alias,
-                    opc.formato_preferido,
-                    opc.requiere_validacion
-                FROM ocr_proveedor_config opc
-                WHERE opc.activo = TRUE
+                    p.id,
+                    p.nit,
+                    p.razon_social,
+                    p.nombre_comercial,
+                    p.email,
+                    p.telefono,
+                    p.direccion,
+                    p.activo
+                FROM proveedores p
+                WHERE p.activo = TRUE
             """)
             
             proveedores = cursor.fetchall()
@@ -173,31 +221,22 @@ class ProveedorMatcher:
         mejor_confidence = 0.0
         
         for proveedor in proveedores:
-            # Comparar con nombre completo
-            nombre_bd = self._limpiar_nombre(proveedor['nombre_completo'])
-            confidence = self._calcular_similitud(nombre_limpio, nombre_bd)
-            
-            if confidence > mejor_confidence:
-                mejor_confidence = confidence
-                mejor_match = proveedor
-            
-            # Comparar con alias si existen
-            if proveedor.get('alias'):
-                for alias in proveedor['alias']:
-                    alias_limpio = self._limpiar_nombre(alias)
-                    confidence_alias = self._calcular_similitud(nombre_limpio, alias_limpio)
-                    
-                    if confidence_alias > mejor_confidence:
-                        mejor_confidence = confidence_alias
-                        mejor_match = proveedor
-            
-            # Comparar con razón social si existe
+            # Comparar con razón social
             if proveedor.get('razon_social'):
                 razon_limpia = self._limpiar_nombre(proveedor['razon_social'])
-                confidence_razon = self._calcular_similitud(nombre_limpio, razon_limpia)
+                confidence = self._calcular_similitud(nombre_limpio, razon_limpia)
                 
-                if confidence_razon > mejor_confidence:
-                    mejor_confidence = confidence_razon
+                if confidence > mejor_confidence:
+                    mejor_confidence = confidence
+                    mejor_match = proveedor
+            
+            # Comparar con nombre comercial
+            if proveedor.get('nombre_comercial'):
+                nombre_comercial_limpio = self._limpiar_nombre(proveedor['nombre_comercial'])
+                confidence_comercial = self._calcular_similitud(nombre_limpio, nombre_comercial_limpio)
+                
+                if confidence_comercial > mejor_confidence:
+                    mejor_confidence = confidence_comercial
                     mejor_match = proveedor
         
         return mejor_match, mejor_confidence

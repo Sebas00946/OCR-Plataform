@@ -21,10 +21,21 @@ class LearningSystem:
         archivo_nombre: str,
         sucursal: Dict,
         unidad: Dict,
-        metadata: Dict
+        metadata: Dict,
+        proveedor_id: Optional[int] = None,
+        confianza_proveedor: Optional[float] = None
     ) -> int:
         """
         Guarda una clasificación en el historial
+        
+        Args:
+            factura_id: ID de la factura
+            archivo_nombre: Nombre del archivo
+            sucursal: Información de sucursal detectada
+            unidad: Información de unidad detectada
+            metadata: Metadatos de la extracción
+            proveedor_id: ID del proveedor detectado (opcional)
+            confianza_proveedor: Confianza del match de proveedor (opcional)
         
         Returns:
             ID del registro en historial
@@ -40,12 +51,14 @@ class LearningSystem:
                     archivo_tipo,
                     sucursal_detectada_id,
                     unidad_funcional_detectada_id,
+                    proveedor_detectado_id,
                     confianza_sucursal,
                     confianza_unidad,
+                    confianza_proveedor,
                     keywords_encontradas,
                     datos_extraidos,
                     tiempo_procesamiento_ms
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s)
                 RETURNING id
             """, (
                 factura_id,
@@ -53,8 +66,10 @@ class LearningSystem:
                 'xml' if archivo_nombre.endswith('.xml') else 'pdf',
                 sucursal.get('id'),
                 unidad.get('id'),
+                proveedor_id,
                 sucursal.get('score', 0),
                 unidad.get('score', 0),
+                confianza_proveedor,
                 json.dumps({
                     'sucursal': sucursal.get('keywords', []),
                     'unidad': unidad.get('keywords', [])
@@ -516,10 +531,10 @@ class LearningSystem:
                 'total_clasificaciones': total,
                 'correctas': correctas,
                 'incorrectas': stats['incorrectas'] or 0,
-                'precision': round(precision, 2),
+                'precision': round(float(precision), 2),
                 'confianza_promedio': {
-                    'sucursal': round(stats['avg_confianza_sucursal'] or 0, 2),
-                    'unidad': round(stats['avg_confianza_unidad'] or 0, 2)
+                    'sucursal': round(float(stats['avg_confianza_sucursal'] or 0), 2),
+                    'unidad': round(float(stats['avg_confianza_unidad'] or 0), 2)
                 }
             }
             
