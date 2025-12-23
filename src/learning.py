@@ -568,3 +568,134 @@ class LearningSystem:
         finally:
             cursor.close()
             conn.close()
+
+    def reinforce_correct_classification(self, text: str, sucursal_id: int, unidad_id: int):
+        """
+        Refuerza keywords de una clasificación correcta
+        Extrae palabras clave del texto y las asocia con la sucursal y unidad correctas
+        
+        Args:
+            text: Texto extraído del documento
+            sucursal_id: ID de la sucursal correcta
+            unidad_id: ID de la unidad funcional correcta
+        """
+        if not text or not text.strip():
+            print(f"  ⚠️  Texto vacío, no se pueden extraer keywords")
+            return
+        
+        try:
+            conn = psycopg2.connect(**self.db_config)
+            cursor = conn.cursor()
+        except Exception as e:
+            print(f"  ❌ Error conectando a BD: {e}")
+            return
+        
+        try:
+            # VALIDAR que los IDs existen en las tablas
+            cursor.execute("SELECT id, nombre FROM sucursales WHERE id = %s AND activo = true", (sucursal_id,))
+            sucursal = cursor.fetchone()
+            
+            cursor.execute("SELECT id, nombre FROM unidades_funcionales WHERE id = %s AND activo = true", (unidad_id,))
+            unidad = cursor.fetchone()
+            
+            if not sucursal:
+                print(f"  ❌ ERROR: Sucursal ID {sucursal_id} NO EXISTE en la tabla sucursales")
+                cursor.close()
+                conn.close()
+                return
+            
+            if not unidad:
+                print(f"  ❌ ERROR: Unidad funcional ID {unidad_id} NO EXISTE en la tabla unidades_funcionales")
+                cursor.close()
+                conn.close()
+                return
+            
+            # Extraer keywords del texto (palabras de 3+ caracteres, sin números puros)
+            import re
+            words = re.findall(r'\b[a-záéíóúñA-ZÁÉÍÓÚÑ]{3,}\b', text.lower())
+            
+            if not words:
+                print(f"  ⚠️  No se encontraron palabras válidas en el texto")
+                cursor.close()
+                conn.close()
+                return
+            
+            # Contar frecuencia de palabras
+            from collections import Counter
+            word_freq = Counter(words)
+            
+            # Tomar las 20 palabras más frecuentes
+            top_words = [word for word, count in word_freq.most_common(20) if count >= 2]
+            
+            # Palabras comunes a ignorar
+            stopwords = {
+                'para', 'con', 'por', 'sin', 'sobre', 'entre', 'hasta', 'desde',
+                'del', 'los', 'las', 'una', 'uno', 'dos', 'tres', 'este', 'esta',
+                'ese', 'esa', 'aquel', 'aquella', 'que', 'cual', 'quien', 'donde',
+                'cuando', 'como', 'porque', 'pero', 'mas', 'menos', 'muy', 'tan',
+                'total', 'subtotal', 'iva', 'valor', 'cantidad', 'precio', 'fecha'
+            }
+            
+            keywords_added_sucursal = 0
+            keywords_added_unidad = 0
+            errors = []
+            
+            for keyword in top_words:
+                if keyword in stopwords or len(keyword) < 4:
+                    continue
+                
+                # Agregar/actualizar keyword para sucursal
+                try:
+                    cursor.execute("""
+                        INSERT INTO ocr_sucursal_keywords (sucursal_id, keyword, peso, activo)
+                        VALUES (%s, %s, 1.0, true)
+                        ON CONFLICT (sucursal_id, keyword) 
+                        DO UPDATE SET 
+                            peso = LEAST(ocr_sucursal_keywords.peso + 0.1, 10.0),
+                            activo = true,
+                            updated_at = NOW()
+                    """, (sucursal_id, keyword))
+                    keywords_added_sucursal += 1
+                except Exception as e:
+                    errors.append(f"Sucursal keyword '{keyword}': {str(e)}")
+                
+                # Agregar/actualizar keyword para unidad funcional
+                try:
+                    cursor.execute("""
+                        INSERT INTO ocr_unidad_keywords (unidad_funcional_id, keyword, peso, activo)
+                        VALUES (%s, %s, 1.0, true)
+                        ON CONFLICT (unidad_funcional_id, keyword) 
+                        DO UPDATE SET 
+                            peso = LEAST(ocr_unidad_keywords.peso + 0.1, 10.0),
+                            activo = true,
+                            updated_at = NOW()
+                    """, (unidad_id, keyword))
+                    keywords_added_unidad += 1
+                except Exception as e:
+                    errors.append(f"Unidad keyword '{keyword}': {str(e)}")
+            
+            conn.commit()
+            
+            # Log para debug
+            if keywords_added_sucursal > 0 or keywords_added_unidad > 0:
+                print(f"  📚 {keywords_added_sucursal} keywords → {sucursal[1]} + {keywords_added_unidad} keywords → {unidad[1]}")
+                import sys
+                sys.stdout.flush()
+            else:
+                print(f"  ⚠️  No se agregaron keywords (palabras filtradas o errores)")
+                
+            if errors:
+                print(f"  ⚠️  {len(errors)} errores al guardar keywords:")
+                for error in errors[:3]:  # Mostrar primeros 3
+                    print(f"     - {error}")
+                import sys
+                sys.stdout.flush()
+            
+        except Exception as e:
+            print(f"  ❌ Error en reinforce_correct_classification: {e}")
+            import traceback
+            traceback.print_exc()
+            conn.rollback()
+        finally:
+            cursor.close()
+            conn.close()

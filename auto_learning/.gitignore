@@ -1,0 +1,15 @@
+# Archivos de progreso y resultados
+auto_learning_progress.json
+auto_learning_results.json
+auto_learning.log
+
+# Archivos temporales
+*.json
+*.log
+carpetas_buzon.json
+buzones_*.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo

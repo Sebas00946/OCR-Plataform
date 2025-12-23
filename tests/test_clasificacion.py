@@ -7,8 +7,8 @@ from pathlib import Path
 
 # Configuración
 API_URL = "http://localhost:8000"
-XML_PATH = "ejemplos/z08002503820122500006DF7/ad08002503820122500006DF7.xml"
-PDF_PATH = "ejemplos/z08002503820122500006DF7/ad08002503820122500006DF7.pdf"
+XML_PATH = "ejemplos/ad090046220301625000006d2.xml"
+PDF_PATH = "ejemplos/ad090046220301625000006d2.pdf"
 
 def test_health():
     """Verificar que la API esté funcionando"""
@@ -94,6 +94,48 @@ def test_classify():
                 print(f"   🔑 Keywords: {', '.join(unidad.get('keywords', [])[:5])}")
             else:
                 print("   ❌ No detectada")
+            
+            print()
+            
+            # Proveedor
+            print("🏭 PROVEEDOR:")
+            proveedor = result.get('proveedor', {})
+            if proveedor:
+                print(f"   Nombre: {proveedor.get('nombre', 'N/A')}")
+                print(f"   NIT: {proveedor.get('nit', 'N/A')}")
+            
+            proveedor_match = result.get('proveedor_match', {})
+            if proveedor_match and proveedor_match.get('matched'):
+                print(f"   ✅ MATCH EN BD: ID {proveedor_match.get('proveedor_id')}")
+                print(f"   📊 Confianza: {proveedor_match.get('confidence', 0):.0%}")
+                print(f"   🔍 Método: {proveedor_match.get('match_method')}")
+            else:
+                print("   ❌ No encontrado en BD")
+            
+            print()
+            
+            # Factura
+            print("📄 FACTURA:")
+            factura = result.get('factura', {})
+            if factura:
+                print(f"   Número: {factura.get('numero', 'N/A')}")
+                print(f"   Fecha: {factura.get('fecha', 'N/A')}")
+                if factura.get('cufe'):
+                    print(f"   CUFE: {factura.get('cufe', 'N/A')[:40]}...")
+            else:
+                print("   ❌ No se extrajeron datos de factura")
+            
+            print()
+            
+            # Cliente
+            print("👤 CLIENTE:")
+            cliente = result.get('cliente', {})
+            if cliente:
+                print(f"   Nombre: {cliente.get('nombre', 'N/A')}")
+                if cliente.get('nit'):
+                    print(f"   NIT: {cliente.get('nit', 'N/A')}")
+            else:
+                print("   ❌ No se extrajeron datos del cliente")
             
             print()
             

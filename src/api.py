@@ -83,6 +83,8 @@ class ClassificationResponse(BaseModel):
     unidad_funcional: Optional[dict]
     proveedor: Optional[dict]
     proveedor_match: Optional[dict]  # Información del match con la BD
+    factura: Optional[dict]  # Datos de la factura (número, fecha, cufe)
+    cliente: Optional[dict]  # Datos del cliente
     metadata: dict
     historial_id: Optional[int] = None
 
@@ -297,6 +299,8 @@ async def classify_invoice(
             unidad_funcional=unidad if unidad['success'] else None,
             proveedor=data.get('proveedor', {}),
             proveedor_match=proveedor_match,
+            factura=data.get('factura', {}),
+            cliente=data.get('cliente', {}),
             historial_id=historial_id,
             metadata={
                 'xml_quality': data['xml_quality'],

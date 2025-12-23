@@ -1,0 +1,10 @@
+{
+  "total_processed": 700,
+  "successful": 657,
+  "failed": 9,
+  "skipped": 34,
+  "by_folder": {},
+  "start_time": "2025-12-23T17:27:32.524034",
+  "errors": [],
+  "end_time": "2025-12-23T18:12:11.800017"
+}

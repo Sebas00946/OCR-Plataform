@@ -163,9 +163,36 @@ OCR-Plataform/
 
 ## 📈 Auto-aprendizaje
 
-El sistema mejora automáticamente:
+El sistema mejora automáticamente de dos formas:
+
+### 1. Validación Manual (API)
 - ✅ **Clasificación correcta**: Aumenta peso de keywords (+1)
 - ❌ **Clasificación incorrecta**: Sugiere nuevas keywords
+
+### 2. Auto-aprendizaje Masivo (Buzón Compartido)
+
+Sistema automatizado que procesa correos del buzón compartido para entrenar el OCR.
+
+**📁 Ubicación**: `auto_learning/`
+
+**Uso rápido:**
+```bash
+# Prueba (10 correos)
+python auto_learning/test_auto_learning.py
+
+# Procesamiento completo (~52,942 correos, 36-40 horas)
+python auto_learning/auto_learning_from_mailbox.py
+```
+
+**Características:**
+- ✅ Procesa ~52,942 correos del 2025 automáticamente
+- ✅ Extrae XML/PDF de archivos ZIP
+- ✅ Aprende de clasificaciones manuales en carpetas
+- ✅ Guarda progreso cada 50 correos (puede reanudar)
+- ✅ Verifica duplicados por CUFE
+- ✅ Manejo robusto de errores
+
+**Ver documentación completa**: `auto_learning/README.md`
 
 ## 🔒 Producción
 
