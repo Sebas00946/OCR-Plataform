@@ -1,10 +1,51 @@
 {
-  "total_processed": 700,
-  "successful": 657,
-  "failed": 9,
-  "skipped": 34,
-  "by_folder": {},
-  "start_time": "2025-12-23T17:27:32.524034",
+  "total_processed": 35087,
+  "successful": 2723,
+  "failed": 2718,
+  "skipped": 29646,
+  "by_folder": {
+    "1. NEIVA/1.2. PROVEEDORES MEDICAMENTOS": {
+      "total": 21236,
+      "processed": 21236,
+      "correct": 409,
+      "incorrect": 991,
+      "skipped": 19836,
+      "errors": 0
+    },
+    "1. NEIVA/1.3. GASTOS": {
+      "total": 8661,
+      "processed": 8661,
+      "correct": 1316,
+      "incorrect": 5,
+      "skipped": 7340,
+      "errors": 0
+    },
+    "2. TUNJA/2.1. PROVEEDORES MEDICOS E IPS": {
+      "total": 1713,
+      "processed": 1713,
+      "correct": 264,
+      "incorrect": 1021,
+      "skipped": 428,
+      "errors": 0
+    },
+    "2. TUNJA/2.2. PROVEEDORES MEDICAMENTOS": {
+      "total": 279,
+      "processed": 279,
+      "correct": 0,
+      "incorrect": 255,
+      "skipped": 24,
+      "errors": 0
+    },
+    "2. TUNJA/2.3. GASTOS": {
+      "total": 2998,
+      "processed": 2998,
+      "correct": 694,
+      "incorrect": 304,
+      "skipped": 2000,
+      "errors": 0
+    }
+  },
+  "start_time": "2025-12-24T00:14:00.453361",
   "errors": [],
-  "end_time": "2025-12-23T18:12:11.800017"
+  "end_time": "2025-12-24T05:03:01.840067"
 }

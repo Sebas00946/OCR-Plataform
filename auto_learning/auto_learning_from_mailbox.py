@@ -144,18 +144,39 @@ class AutoLearningProcessor:
     
     def get_access_token(self):
         """Obtiene token de acceso"""
-        data = {
-            'grant_type': 'client_credentials',
-            'client_id': CLIENT_ID,
-            'client_secret': CLIENT_SECRET,
-            'scope': 'https://graph.microsoft.com/.default'
-        }
+        try:
+            data = {
+                'grant_type': 'client_credentials',
+                'client_id': CLIENT_ID,
+                'client_secret': CLIENT_SECRET,
+                'scope': 'https://graph.microsoft.com/.default'
+            }
+            
+            response = requests.post(TOKEN_URL, data=data)
+            if response.status_code == 200:
+                self.access_token = response.json()['access_token']
+                self.token_time = datetime.now()
+                self.log("Token de acceso obtenido exitosamente")
+                return True
+            else:
+                self.log(f"Error obteniendo token: {response.status_code} - {response.text}")
+                return False
+        except Exception as e:
+            self.log(f"Excepción obteniendo token: {e}")
+            return False
+    
+    def ensure_valid_token(self):
+        """Asegura que el token sea válido, renovándolo si es necesario"""
+        # Los tokens de Azure expiran en 1 hora, renovar cada 50 minutos
+        if not hasattr(self, 'token_time') or not self.access_token:
+            return self.get_access_token()
         
-        response = requests.post(TOKEN_URL, data=data)
-        if response.status_code == 200:
-            self.access_token = response.json()['access_token']
-            return True
-        return False
+        elapsed = (datetime.now() - self.token_time).total_seconds() / 60
+        if elapsed > 50:
+            self.log("Token próximo a expirar, renovando...")
+            return self.get_access_token()
+        
+        return True
     
     def load_progress(self):
         """Carga progreso guardado"""
@@ -177,64 +198,78 @@ class AutoLearningProcessor:
     
     def get_folder_id(self, folder_path):
         """Obtiene ID de carpeta por su ruta (desde SUCURSALES)"""
+        # Asegurar token válido
+        if not self.ensure_valid_token():
+            self.log("ERROR: No se pudo obtener token válido")
+            return None
+        
         headers = {
             'Authorization': f'Bearer {self.access_token}',
             'Content-Type': 'application/json'
         }
         
-        # Primero obtener carpeta SUCURSALES
-        url = f"{GRAPH_API_URL}/users/{SHARED_MAILBOX}/mailFolders?$top=500"
-        response = requests.get(url, headers=headers)
-        
-        if response.status_code != 200:
-            self.log(f"Error obteniendo carpetas raíz: {response.status_code}")
-            return None
-        
-        folders = response.json().get('value', [])
-        sucursales_folder = None
-        
-        for folder in folders:
-            if 'SUCURSALES' in folder['displayName'].upper():
-                sucursales_folder = folder['id']
-                self.log(f"Carpeta SUCURSALES encontrada: {folder['displayName']}")
-                break
-        
-        if not sucursales_folder:
-            self.log("ERROR: No se encontró carpeta SUCURSALES")
-            return None
-        
-        # Navegar por la ruta desde SUCURSALES
-        parts = folder_path.split('/')
-        current_id = sucursales_folder
-        
-        for i, part in enumerate(parts):
-            self.log(f"Buscando subcarpeta: {part}")
-            url = f"{GRAPH_API_URL}/users/{SHARED_MAILBOX}/mailFolders/{current_id}/childFolders?$top=500"
-            response = requests.get(url, headers=headers)
+        try:
+            # Primero obtener carpeta SUCURSALES
+            url = f"{GRAPH_API_URL}/users/{SHARED_MAILBOX}/mailFolders?$top=500"
+            response = requests.get(url, headers=headers, timeout=30)
             
             if response.status_code != 200:
-                self.log(f"Error obteniendo subcarpetas: {response.status_code}")
+                self.log(f"Error obteniendo carpetas raíz: {response.status_code} - {response.text}")
                 return None
             
             folders = response.json().get('value', [])
-            found = False
+            sucursales_folder = None
             
-            # Buscar la carpeta (comparación flexible)
             for folder in folders:
-                folder_name = folder['displayName']
-                # Comparar ignorando espacios extras y mayúsculas/minúsculas
-                if folder_name.strip().upper() == part.strip().upper():
-                    current_id = folder['id']
-                    found = True
-                    self.log(f"  ✓ Encontrada: {folder_name}")
+                if 'SUCURSALES' in folder['displayName'].upper():
+                    sucursales_folder = folder['id']
+                    self.log(f"Carpeta SUCURSALES encontrada: {folder['displayName']}")
                     break
             
-            if not found:
-                self.log(f"  ✗ No encontrada: {part}")
-                self.log(f"  Carpetas disponibles: {[f['displayName'] for f in folders[:10]]}")
+            if not sucursales_folder:
+                self.log("ERROR: No se encontró carpeta SUCURSALES")
                 return None
-        
-        return current_id
+            
+            # Navegar por la ruta desde SUCURSALES
+            parts = folder_path.split('/')
+            current_id = sucursales_folder
+            
+            for i, part in enumerate(parts):
+                self.log(f"Buscando subcarpeta nivel {i+1}: {part}")
+                url = f"{GRAPH_API_URL}/users/{SHARED_MAILBOX}/mailFolders/{current_id}/childFolders?$top=500"
+                response = requests.get(url, headers=headers, timeout=30)
+                
+                if response.status_code != 200:
+                    self.log(f"Error obteniendo subcarpetas nivel {i+1}: {response.status_code} - {response.text}")
+                    return None
+                
+                folders = response.json().get('value', [])
+                found = False
+                
+                # Buscar la carpeta (comparación flexible)
+                for folder in folders:
+                    folder_name = folder['displayName']
+                    # Comparar ignorando espacios extras y mayúsculas/minúsculas
+                    if folder_name.strip().upper() == part.strip().upper():
+                        current_id = folder['id']
+                        found = True
+                        self.log(f"  ✓ Encontrada: {folder_name}")
+                        break
+                
+                if not found:
+                    self.log(f"  ✗ No encontrada: {part}")
+                    self.log(f"  Carpetas disponibles: {[f['displayName'] for f in folders[:10]]}")
+                    return None
+            
+            self.log(f"✅ Carpeta completa encontrada: {folder_path}")
+            return current_id
+            
+        except requests.exceptions.Timeout:
+            self.log(f"ERROR: Timeout buscando carpeta {folder_path}")
+            return None
+        except Exception as e:
+            self.log(f"ERROR: Excepción buscando carpeta {folder_path}: {e}")
+            return None
     
     def get_emails_from_folder(self, folder_id, start_date="2025-01-01"):
         """Obtiene correos de una carpeta desde una fecha"""
@@ -605,12 +640,8 @@ class AutoLearningProcessor:
         if folder_path in self.progress['processed_folders']:
             processed_count = self.progress['processed_folders'][folder_path]
             print(f"⚠️  Carpeta ya procesada anteriormente ({processed_count} correos)")
-            print(f"   ¿Deseas reprocesar? (s/n): ", end="")
-            self.log(f"Carpeta ya procesada: {processed_count} correos")
-            
-            # En modo automático, saltar
-            print("n (modo automático)")
-            self.log("Saltando carpeta (modo automático)")
+            print(f"   Saltando carpeta...")
+            self.log(f"Carpeta ya procesada: {processed_count} correos - SALTANDO")
             return
         
         # Obtener ID de carpeta
@@ -649,6 +680,9 @@ class AutoLearningProcessor:
         
         if total_emails == 0:
             self.log("No hay correos para procesar")
+            # Marcar como procesada aunque esté vacía
+            self.progress['processed_folders'][folder_path] = 0
+            self.save_progress()
             return
         
         # Inicializar estadísticas de carpeta
