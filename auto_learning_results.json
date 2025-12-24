@@ -1,51 +1,115 @@
 {
-  "total_processed": 35087,
-  "successful": 2723,
-  "failed": 2718,
-  "skipped": 29646,
+  "total_processed": 6242,
+  "successful": 387,
+  "failed": 2801,
+  "skipped": 3054,
   "by_folder": {
-    "1. NEIVA/1.2. PROVEEDORES MEDICAMENTOS": {
-      "total": 21236,
-      "processed": 21236,
-      "correct": 409,
-      "incorrect": 991,
-      "skipped": 19836,
-      "errors": 0
-    },
-    "1. NEIVA/1.3. GASTOS": {
-      "total": 8661,
-      "processed": 8661,
-      "correct": 1316,
-      "incorrect": 5,
-      "skipped": 7340,
-      "errors": 0
-    },
-    "2. TUNJA/2.1. PROVEEDORES MEDICOS E IPS": {
-      "total": 1713,
-      "processed": 1713,
-      "correct": 264,
-      "incorrect": 1021,
-      "skipped": 428,
-      "errors": 0
-    },
-    "2. TUNJA/2.2. PROVEEDORES MEDICAMENTOS": {
-      "total": 279,
-      "processed": 279,
+    "3.FLORENCIA/3.2. PROVEEDORES MEDICAMENTOS": {
+      "total": 50,
+      "processed": 50,
       "correct": 0,
-      "incorrect": 255,
-      "skipped": 24,
+      "incorrect": 43,
+      "skipped": 7,
       "errors": 0
     },
-    "2. TUNJA/2.3. GASTOS": {
-      "total": 2998,
-      "processed": 2998,
-      "correct": 694,
-      "incorrect": 304,
-      "skipped": 2000,
+    "3.FLORENCIA/3.3. GASTOS": {
+      "total": 3385,
+      "processed": 3385,
+      "correct": 270,
+      "incorrect": 986,
+      "skipped": 2129,
+      "errors": 0
+    },
+    "4. PITALITO/4.1. PROVEEDORES MEDICOS E IPS": {
+      "total": 99,
+      "processed": 99,
+      "correct": 0,
+      "incorrect": 96,
+      "skipped": 3,
+      "errors": 0
+    },
+    "4. PITALITO/4.2. PROVEEDORES MEDICAMENTOS": {
+      "total": 12,
+      "processed": 12,
+      "correct": 0,
+      "incorrect": 10,
+      "skipped": 2,
+      "errors": 0
+    },
+    "4. PITALITO/4.3. GASTOS": {
+      "total": 401,
+      "processed": 401,
+      "correct": 0,
+      "incorrect": 383,
+      "skipped": 18,
+      "errors": 0
+    },
+    "5. BOGOTA/5.1. PROVEEDORES MEDICOS E IPS": {
+      "total": 16,
+      "processed": 16,
+      "correct": 0,
+      "incorrect": 13,
+      "skipped": 3,
+      "errors": 0
+    },
+    "5. BOGOTA/5.3. GASTOS": {
+      "total": 1600,
+      "processed": 1600,
+      "correct": 3,
+      "incorrect": 766,
+      "skipped": 830,
+      "errors": 1
+    },
+    "6. FACATATIVA/6.1. PROVEEDORES MEDICOS E IPS": {
+      "total": 154,
+      "processed": 154,
+      "correct": 0,
+      "incorrect": 141,
+      "skipped": 13,
+      "errors": 0
+    },
+    "6. FACATATIVA/6.2. PROVEEDORES MEDICAMENTOS": {
+      "total": 20,
+      "processed": 20,
+      "correct": 0,
+      "incorrect": 12,
+      "skipped": 8,
+      "errors": 0
+    },
+    "6. FACATATIVA/6.3 GASTOS": {
+      "total": 271,
+      "processed": 271,
+      "correct": 114,
+      "incorrect": 138,
+      "skipped": 19,
+      "errors": 0
+    },
+    "7. DUITAMA/7.1. PROVEEDORES MÉDICOS E IPS": {
+      "total": 13,
+      "processed": 13,
+      "correct": 0,
+      "incorrect": 7,
+      "skipped": 6,
+      "errors": 0
+    },
+    "7. DUITAMA/7.3. GASTOS": {
+      "total": 221,
+      "processed": 221,
+      "correct": 0,
+      "incorrect": 205,
+      "skipped": 16,
       "errors": 0
     }
   },
-  "start_time": "2025-12-24T00:14:00.453361",
-  "errors": [],
-  "end_time": "2025-12-24T05:03:01.840067"
+  "start_time": "2025-12-24T07:06:51.556694",
+  "errors": [
+    {
+      "folder": "5. BOGOTA/5.3. GASTOS",
+      "email_id": "AAMkADhiOTM2NWU1LTk4ZDMtNDRmZi05NTcyLTllZGMwNDNlOTUxNgBGAAAAAAD7vO3y5J9jS5As4sHxK6FtBwAtVnEmWK0CSoezVgLWPPaoAAJOj4WaAAAtVnEmWK0CSoezVgLWPPaoAAOcOblEAAA=",
+      "subject": "55173652;GLORIA PATRICIA ARTUNDUAGA NUÑEZ;FE742;01;GLORIA PATRICIA ARTUNDUAGA NUÑEZ;",
+      "error": "Error obteniendo adjuntos: HTTPSConnectionPool(host='graph.microsoft.com', port=443): Read timed out. (read timeout=None)",
+      "timestamp": "2025-12-24T09:22:33.666980"
+    }
+  ],
+  "end_time": "2025-12-24T09:59:51.287504"
 }
