@@ -56,6 +56,15 @@ class InvoiceExtractor:
             tree = ET.parse(xml_path)
             root = tree.getroot()
             
+            # Intentar extraer el Invoice embebido en CDATA
+            embedded_invoice_root = self._extract_embedded_invoice(root)
+            if embedded_invoice_root is not None:
+                # Si hay Invoice embebido, usarlo como root principal
+                invoice_root = embedded_invoice_root
+            else:
+                # Si no hay embebido, usar el root actual
+                invoice_root = root
+            
             parts = []
             quality_score = 0
             max_quality = 8  # Número de campos importantes
@@ -195,6 +204,141 @@ class InvoiceExtractor:
             ])
             if cufe:
                 structured_data['factura']['cufe'] = cufe.strip()
+            
+            # ============================================
+            # VALORES MONETARIOS
+            # ============================================
+            
+            valores = {}
+            
+            # Subtotal (LineExtensionAmount) - Valor antes de impuestos
+            subtotal = self._extract_text(invoice_root, [
+                './/cac:LegalMonetaryTotal//cbc:LineExtensionAmount',
+            ])
+            if subtotal:
+                try:
+                    valores['subtotal'] = float(subtotal.strip())
+                    valores['subtotal_formatted'] = f"${float(subtotal.strip()):,.2f}"
+                except:
+                    pass
+            
+            # Total sin impuestos (TaxExclusiveAmount)
+            tax_exclusive = self._extract_text(invoice_root, [
+                './/cac:LegalMonetaryTotal//cbc:TaxExclusiveAmount',
+            ])
+            if tax_exclusive:
+                try:
+                    valores['tax_exclusive'] = float(tax_exclusive.strip())
+                except:
+                    pass
+            
+            # Total con impuestos (TaxInclusiveAmount)
+            tax_inclusive = self._extract_text(invoice_root, [
+                './/cac:LegalMonetaryTotal//cbc:TaxInclusiveAmount',
+            ])
+            if tax_inclusive:
+                try:
+                    valores['tax_inclusive'] = float(tax_inclusive.strip())
+                except:
+                    pass
+            
+            # Total a pagar (PayableAmount) - Este es el valor final
+            total = self._extract_text(invoice_root, [
+                './/cac:LegalMonetaryTotal//cbc:PayableAmount',
+            ])
+            if total:
+                try:
+                    valores['total'] = float(total.strip())
+                    valores['total_formatted'] = f"${float(total.strip()):,.2f}"
+                except:
+                    pass
+            
+            # IVA (TaxAmount del TaxTotal)
+            iva = self._extract_text(invoice_root, [
+                './/cac:TaxTotal//cbc:TaxAmount',
+            ])
+            if iva:
+                try:
+                    valores['iva'] = float(iva.strip())
+                    valores['iva_formatted'] = f"${float(iva.strip()):,.2f}"
+                except:
+                    pass
+            
+            # Retenciones (WithholdingTaxTotal) - Solo del nivel de Invoice, no de líneas
+            retenciones = []
+            retenciones_agrupadas = {}  # Para agrupar por tipo
+            
+            # Buscar solo las retenciones a nivel de Invoice (no dentro de InvoiceLine)
+            # Primero, obtener todos los WithholdingTaxTotal que NO estén dentro de InvoiceLine
+            for wht in invoice_root.findall('.//cac:WithholdingTaxTotal', self.NAMESPACES):
+                # Verificar que no esté dentro de un InvoiceLine
+                parent = wht
+                is_in_invoice_line = False
+                
+                # Recorrer hacia arriba para ver si está dentro de InvoiceLine
+                # Como ElementTree no tiene parent, usaremos una búsqueda diferente
+                # Buscaremos solo los WithholdingTaxTotal que sean hijos directos del Invoice
+                
+                # Obtener el path del elemento
+                try:
+                    # Verificar si el padre es Invoice (no InvoiceLine)
+                    # Buscar en el nivel correcto
+                    invoice_wht = invoice_root.findall('./cac:WithholdingTaxTotal', self.NAMESPACES)
+                    if wht in invoice_wht:
+                        # Este es un WithholdingTaxTotal a nivel de Invoice
+                        tax_amount_elem = wht.find('.//cbc:TaxAmount', self.NAMESPACES)
+                        if tax_amount_elem is not None and tax_amount_elem.text:
+                            try:
+                                # Obtener el tipo de retención
+                                tax_category = wht.find('.//cac:TaxCategory//cac:TaxScheme//cbc:Name', self.NAMESPACES)
+                                tax_name = tax_category.text if tax_category is not None else 'Retención'
+                                
+                                # Obtener el porcentaje
+                                percent_elem = wht.find('.//cac:TaxCategory//cbc:Percent', self.NAMESPACES)
+                                percent = float(percent_elem.text) if percent_elem is not None and percent_elem.text else 0
+                                
+                                valor = float(tax_amount_elem.text.strip())
+                                
+                                # Agrupar por nombre y porcentaje
+                                key = f"{tax_name}_{percent}"
+                                if key not in retenciones_agrupadas:
+                                    retenciones_agrupadas[key] = {
+                                        'nombre': tax_name,
+                                        'porcentaje': percent,
+                                        'valor': 0
+                                    }
+                                retenciones_agrupadas[key]['valor'] += valor
+                            except:
+                                pass
+                except:
+                    pass
+            
+            # Convertir a lista y formatear
+            if retenciones_agrupadas:
+                for ret_data in retenciones_agrupadas.values():
+                    ret_data['valor_formatted'] = f"${ret_data['valor']:,.2f}"
+                    retenciones.append(ret_data)
+                
+                valores['retenciones'] = retenciones
+                valores['total_retenciones'] = sum(r['valor'] for r in retenciones)
+                valores['total_retenciones_formatted'] = f"${sum(r['valor'] for r in retenciones):,.2f}"
+            
+            # Calcular IVA si no está explícito
+            if 'iva' not in valores and 'subtotal' in valores and 'total' in valores:
+                iva_calculado = valores['total'] - valores['subtotal']
+                if iva_calculado > 0:
+                    valores['iva'] = iva_calculado
+                    valores['iva_formatted'] = f"${iva_calculado:,.2f}"
+            
+            # Calcular valor neto (total - retenciones)
+            if 'total' in valores and 'total_retenciones' in valores:
+                valor_neto = valores['total'] - valores['total_retenciones']
+                valores['valor_neto'] = valor_neto
+                valores['valor_neto_formatted'] = f"${valor_neto:,.2f}"
+            
+            # Agregar valores a la estructura
+            if valores:
+                structured_data['factura']['valores'] = valores
             
             # ============================================
             # DATOS DEL CLIENTE (RECEPTOR)
@@ -550,7 +694,7 @@ class InvoiceExtractor:
         merged = {}
         
         # Campos a combinar
-        fields = ['numero', 'fecha', 'cufe']
+        fields = ['numero', 'fecha', 'cufe', 'valores']
         
         for field in fields:
             if xml_data.get(field):
@@ -577,3 +721,31 @@ class InvoiceExtractor:
                 if elem.text:
                     texts.append(elem.text.strip())
         return texts
+    
+    def _extract_embedded_invoice(self, root):
+        """
+        Extrae el Invoice embebido en el CDATA del AttachedDocument
+        
+        Args:
+            root: Root del XML AttachedDocument
+        
+        Returns:
+            Root del Invoice embebido o None si no existe
+        """
+        try:
+            # Buscar el CDATA que contiene el Invoice
+            description = root.find('.//cac:Attachment//cac:ExternalReference//cbc:Description', self.NAMESPACES)
+            
+            if description is not None and description.text:
+                # El texto del CDATA contiene el XML del Invoice
+                invoice_xml = description.text.strip()
+                
+                # Parsear el XML embebido
+                invoice_root = ET.fromstring(invoice_xml)
+                
+                return invoice_root
+        except Exception as e:
+            # Si falla, retornar None para usar el root original
+            pass
+        
+        return None

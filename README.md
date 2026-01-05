@@ -43,7 +43,13 @@ Documentación: `http://localhost:8000/docs`
 ```bash
 POST /api/classify
 ```
-Sube XML y/o PDF para clasificar automáticamente y extraer datos del proveedor.
+Sube XML y/o PDF para clasificar automáticamente y extraer datos del proveedor y valores monetarios.
+
+**Respuesta incluye:**
+- Datos del proveedor (nombre, NIT, ciudad)
+- Número de factura, fecha, CUFE
+- **Valores monetarios**: subtotal, IVA, retenciones, valor neto 💰
+- Clasificación (sucursal y unidad funcional)
 
 ### Validar Clasificación (Auto-aprendizaje)
 ```bash
@@ -109,6 +115,18 @@ python scripts/test_logging.py
 python scripts/test_proveedor.py
 ```
 
+### Prueba de extracción de valores monetarios 💰
+```bash
+# Demo completo del sistema (recomendado)
+python scripts/demo_completo.py
+
+# Extraer valores de cualquier factura
+python scripts/extraer_valores.py <ruta_xml> [ruta_pdf]
+
+# Ejemplo
+python scripts/extraer_valores.py ejemplos/FQE142584/ad09004334370002500036584.xml
+```
+
 ### Prueba completa de API
 ```bash
 python test_api_complete.py
@@ -119,6 +137,7 @@ python test_api_complete.py
 - ✅ Lee XML (60%) + PDF (40%) con pesos inteligentes
 - ✅ Clasifica sucursal y unidad funcional automáticamente
 - ✅ Extrae datos del proveedor (nombre, NIT, dirección, ciudad, teléfono, email)
+- ✅ **Extrae valores monetarios** (subtotal, IVA, retenciones, valor neto) 💰
 - ✅ Sistema de auto-aprendizaje
 - ✅ Keywords parametrizables en base de datos
 - ✅ API REST lista para Node.js
@@ -229,9 +248,12 @@ curl http://localhost:8000/api/logs
 - **Logs del Sistema**: http://localhost:8000/api/logs
 
 **📚 Documentación:**
+- **⭐ Guía Node.js - Valores**: `GUIA_NODEJS_VALORES.md` - **EMPIEZA AQUÍ** 💰
 - **📋 Índice General**: `INDICE_DOCUMENTACION.md` - Ver toda la documentación
-- **⭐ Resumen para Node.js**: `RESUMEN_PARA_NODEJS.md` - Empieza aquí
+- **Resumen para Node.js**: `RESUMEN_PARA_NODEJS.md`
 - **Guía completa Node.js**: `GUIA_INTEGRACION_NODEJS.md`
 - **Arquitectura del Sistema**: `ARQUITECTURA_SISTEMA.md`
 - **Extracción de Proveedor**: `EXTRACCION_PROVEEDOR.md`
+- **Extracción de Valores Monetarios**: `EXTRACCION_VALORES_MONETARIOS.md`
 - **Sistema de Logging**: `LOGGING_SISTEMA.md`
+- **Resumen de Clasificación**: `RESUMEN_CLASIFICACION.md`
