@@ -270,6 +270,15 @@ async def classify_invoice(
         
         proveedor_match = proveedor_matcher.match_proveedor(proveedor_data)
         
+        # Preparar datos de factura completos (incluyendo valores)
+        factura_data = data.get('factura', {})
+        
+        # Log de debugging para valores
+        if factura_data.get('valores'):
+            ocr_logger.logger.debug(f"Valores de factura extraídos: {factura_data['valores']}")
+        else:
+            ocr_logger.logger.debug("No se extrajeron valores de la factura")
+        
         # Guardar en historial (inmediatamente para obtener el ID)
         archivo_nombre = pdf_filename if pdf_filename else xml_filename
         historial_id = learning_system.save_classification(

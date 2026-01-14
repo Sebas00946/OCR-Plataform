@@ -11,7 +11,6 @@ from typing import Dict, Tuple, Optional, List
 class PDFClassifier:
     """Clasifica facturas PDF usando keywords de la base de datos"""
     
-    # Keywords que deben ignorarse (muy genéricas o numéricas)
     KEYWORDS_IGNORAR = {
         # Números de años
         '2020', '2021', '2022', '2023', '2024', '2025', '2026',

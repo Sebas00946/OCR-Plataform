@@ -1,6 +1,7 @@
 """
 Extractor de texto de XML y PDF
 Extrae datos estructurados de facturas electrónicas colombianas
+Optimizado para pdfplumber con extracción mejorada
 """
 import xml.etree.ElementTree as ET
 import pdfplumber
@@ -31,17 +32,32 @@ class InvoiceExtractor:
         ],
         # Número de factura
         'numero_factura': [
-            r'(?:FACTURA|FE|FV|FVE|FEPN|No\.?|N[°º])[:\s]*([A-Z]*\s*\d+)',
+            r'(?:FACTURA|FE|FV|FVE|FEPN|FQE|No\.?|N[°º])[:\s]*([A-Z]*\s*\d+)',
             r'Nro\.?\s*Doc\.?[:\s]*([A-Z]?\d+)',
             r'(?:FACTURA ELECTR[OÓ]NICA)[^\d]*(\d+)',
-            r'No\.\s*FE\s*(\d+)',
-            r'No\.\s*FVE\s*(\d+)',
+            r'No\.\s*(?:FE|FV|FVE|FEPN|FQE)\s*(\d+)',
+            r'N[°º]\s*(?:FE|FV|FVE|FEPN|FQE)\s*(\d+)',
         ],
         # Razón social / Nombre del proveedor (al inicio del documento)
         'razon_social': [
             r'^([A-ZÁÉÍÓÚÑ][A-ZÁÉÍÓÚÑ\s\.]+(?:S\.?A\.?S\.?|LTDA\.?|S\.?A\.?))',
             r'Raz[oó]n\s*social/?Nombre[:\s]*([^\n]+)',
             r'Datos\s+del\s+Emisor[^\n]*\n[^\n]*Raz[oó]n\s*social/?Nombre[:\s]*([^\n]+)',
+        ],
+        # Orden de Compra (múltiples formatos - GENÉRICO)
+        'orden_compra': [
+            # Formato 1: "ORDEN DE COMPRA No. XXX-2026-139"
+            r'ORDEN\s+DE\s+COMPRA\s+No\.?\s*[:\s]*([A-Z0-9\-/]+)',
+            # Formato 2: "Orden de Compra: XXX-2025-6327"
+            r'Orden\s+de\s+Compra[:\s]+([A-Z0-9\-/]+)',
+            # Formato 3: "O.C: XXX" o "OC: XXX"
+            r'\bO\.?\s*C\.?\s*[:\s]+([A-Z0-9\-/]+)',
+            # Formato 4: "Purchase Order: XXX" o "P.O: XXX"
+            r'(?:Purchase\s+Order|P\.?\s*O\.?)\s*[:\s]+([A-Z0-9\-/]+)',
+            # Formato 5: "Pedido:" o "Pedido No:"
+            r'Pedido\s*(?:No\.?|N[°º])?\s*[:\s]+([A-Z0-9\-/]+)',
+            # Formato 6: "Ref:" o "Referencia:"
+            r'(?:Ref|Referencia)[:\s]+([A-Z0-9\-/]+)',
         ],
     }
     
@@ -204,6 +220,13 @@ class InvoiceExtractor:
             ])
             if cufe:
                 structured_data['factura']['cufe'] = cufe.strip()
+            
+            # Orden de Compra (puede estar en OrderReference)
+            orden_compra = self._extract_text(invoice_root, [
+                './/cac:OrderReference//cbc:ID',
+            ])
+            if orden_compra:
+                structured_data['factura']['orden_compra'] = orden_compra.strip()
             
             # ============================================
             # VALORES MONETARIOS
@@ -423,24 +446,77 @@ class InvoiceExtractor:
     
     def extract_from_pdf(self, pdf_path: str) -> Tuple[str, Dict]:
         """
-        Extrae texto del PDF y datos estructurados
+        Extrae texto del PDF usando pdfplumber con extracción mejorada
+        
+        Mejoras:
+        - Extracción por tabla y texto
+        - Limpieza de caracteres especiales
+        - Mejor detección de campos clave
         
         Returns:
             Tuple[str, Dict]: (texto_extraido, datos_estructurados)
         """
         try:
+            text_parts = []
+            
             with pdfplumber.open(pdf_path) as pdf:
-                text = ""
                 for page in pdf.pages:
-                    text += (page.extract_text() or "") + "\n"
-                
-                # Extraer datos estructurados del texto
-                structured_data = self._extract_pdf_structured_data(text)
-                
-                return text.upper(), structured_data
+                    # Extraer texto normal
+                    page_text = page.extract_text() or ""
+                    text_parts.append(page_text)
+                    
+                    # Intentar extraer tablas (mejora la extracción de datos estructurados)
+                    tables = page.extract_tables()
+                    if tables:
+                        for table in tables:
+                            # Convertir tabla a texto
+                            for row in table:
+                                if row:
+                                    row_text = ' '.join([str(cell) if cell else '' for cell in row])
+                                    text_parts.append(row_text)
+            
+            # Combinar todo el texto
+            full_text = '\n'.join(text_parts)
+            
+            # Limpiar texto (remover caracteres problemáticos pero mantener estructura)
+            full_text = self._clean_pdf_text(full_text)
+            
+            print(f"📄 PDF extraído: {len(full_text)} caracteres")
+            
+            # Extraer datos estructurados
+            structured_data = self._extract_pdf_structured_data(full_text)
+            
+            return full_text.upper(), structured_data
+            
         except Exception as e:
             print(f"⚠️  Error al leer PDF: {e}")
+            import traceback
+            traceback.print_exc()
             return "", {'proveedor': {}, 'factura': {}}
+    
+    def _clean_pdf_text(self, text: str) -> str:
+        """
+        Limpia el texto extraído del PDF manteniendo información útil
+        
+        Args:
+            text: Texto crudo del PDF
+        
+        Returns:
+            Texto limpio
+        """
+        if not text:
+            return ""
+        
+        # Remover caracteres de control excepto saltos de línea y espacios
+        text = ''.join(char for char in text if char.isprintable() or char in '\n\r\t ')
+        
+        # Normalizar espacios múltiples
+        text = re.sub(r' +', ' ', text)
+        
+        # Normalizar saltos de línea múltiples
+        text = re.sub(r'\n\n+', '\n\n', text)
+        
+        return text.strip()
     
     def _extract_pdf_structured_data(self, text: str) -> Dict:
         """
@@ -472,6 +548,11 @@ class InvoiceExtractor:
         if razon_social:
             structured_data['proveedor']['nombre'] = razon_social
             structured_data['proveedor']['razon_social'] = razon_social
+        
+        # Buscar orden de compra
+        orden_compra = self._extract_orden_compra(text)
+        if orden_compra:
+            structured_data['factura']['orden_compra'] = orden_compra
         
         return structured_data
     
@@ -507,44 +588,160 @@ class InvoiceExtractor:
         """
         Extrae el número de factura del texto del PDF
         Busca diferentes formatos comunes en facturas colombianas
+        GENÉRICO: Captura cualquier prefijo de factura
+        PRIORIDAD: Prefijos más largos primero para evitar capturas parciales (FQE antes que FE)
         """
+        # Patrones ordenados por PRIORIDAD (más específicos primero)
         patterns = [
-            # FEPN 1746 o FEPN1746
-            r'FEPN\s*(\d+)',
-            # FE 356 o FE356
-            r'\bFE\s*(\d+)',
-            # FVE 2473 o FVE2473
-            r'FVE\s*(\d+)',
-            # FV 123 o FV123
-            r'\bFV\s*(\d+)',
-            # No. FE 356
-            r'No\.?\s*(?:FE|FV|FVE|FEPN)\s*(\d+)',
-            # N° FVE 2473
-            r'N[°º]\s*(?:FVE|FE|FV|FEPN)\s*(\d+)',
-            # FACTURA ELECTRÓNICA DE VENTA ... No. 356
-            r'FACTURA\s+ELECTR[OÓ]NICA[^\n]*No\.?\s*(\d+)',
-            # Nro. Doc.: Z3872
-            r'Nro\.?\s*Doc\.?[:\s]*([A-Z]?\d+)',
-            # Número Factura: 123
-            r'N[uú]mero\s*(?:de\s*)?Factura[:\s]*([A-Z]*\d+)',
+            # PRIORIDAD 1: Patrones con contexto de "FACTURA ELECTRÓNICA"
+            (r'FACTURA\s+ELECTR[OÓ]NICA[^\n]*N[°º]\s*([A-Z]{2,5}\d+)', 1, 'FACTURA ELECTRONICA N°'),
+            
+            # PRIORIDAD 2: Patrones con "N°" o "No."
+            (r'N[°º]\.?\s*([A-Z]{2,5}\d+)', 2, 'N°'),
+            (r'No\.?\s*([A-Z]{2,5}\d+)', 3, 'No.'),
+            
+            # PRIORIDAD 3: Prefijos específicos de 3+ letras (más largos primero)
+            # Esto evita que "FE" capture "FQE"
+            (r'\b(FEPN\d+)\b', 4, 'FEPN'),
+            (r'\b(FQE\d+)\b', 5, 'FQE'),
+            (r'\b(FVE\d+)\b', 6, 'FVE'),
+            
+            # PRIORIDAD 4: Prefijos de 2 letras (con lookbehind/lookahead)
+            # Solo si no hay letra antes o después
+            (r'(?<![A-Z])\b(FE\d+)\b(?![A-Z])', 7, 'FE'),
+            (r'(?<![A-Z])\b(FV\d+)\b(?![A-Z])', 8, 'FV'),
+            
+            # PRIORIDAD 5: Nro. Doc. o Número Factura
+            (r'Nro\.?\s*Doc\.?[:\s]*([A-Z]{1,5}\d+)', 9, 'Nro. Doc.'),
+            (r'N[uú]mero\s*(?:de\s*)?Factura[:\s]*([A-Z]{0,5}\d+)', 10, 'Número Factura'),
+            
+            # PRIORIDAD 6: Patrón genérico (último recurso)
+            (r'\b([A-Z]{2,5}\d{4,})\b', 11, 'Genérico'),
         ]
         
-        for pattern in patterns:
-            match = re.search(pattern, text, re.IGNORECASE)
-            if match:
-                numero = match.group(1).strip()
-                # Reconstruir con prefijo si es necesario
-                if 'FEPN' in pattern:
-                    return f"FEPN{numero}"
-                elif 'FVE' in pattern:
-                    return f"FVE{numero}"
-                elif 'FE' in pattern and 'FVE' not in pattern:
-                    return f"FE{numero}"
-                elif 'FV' in pattern and 'FVE' not in pattern:
-                    return f"FV{numero}"
-                return numero
+        # Buscar con cada patrón y recolectar candidatos
+        candidates = []
         
-        return None
+        for pattern, priority, name in patterns:
+            matches = re.findall(pattern, text, re.IGNORECASE)
+            if matches:
+                for match in matches:
+                    numero = match.strip() if isinstance(match, str) else match[0].strip()
+                    numero = numero.upper()
+                    
+                    # Validar que sea un número de factura válido
+                    if self._is_valid_numero_factura(numero, text):
+                        candidates.append({
+                            'numero': numero,
+                            'priority': priority,
+                            'pattern': name,
+                            'length': len(numero)
+                        })
+        
+        if not candidates:
+            return None
+        
+        # Ordenar candidatos por:
+        # 1. Prioridad (menor es mejor)
+        # 2. Longitud (más largo es mejor - más específico)
+        candidates.sort(key=lambda x: (x['priority'], -x['length']))
+        
+        # Retornar el mejor candidato
+        return candidates[0]['numero']
+    
+    def _is_valid_numero_factura(self, numero: str, text: str) -> bool:
+        """
+        Valida que un número de factura sea válido
+        
+        Args:
+            numero: Número de factura candidato
+            text: Texto completo del PDF para contexto
+        
+        Returns:
+            True si parece válido, False si no
+        """
+        if not numero or len(numero) < 3:
+            return False
+        
+        # Debe tener al menos un dígito
+        if not any(c.isdigit() for c in numero):
+            return False
+        
+        # Si tiene letras, debe tener al menos 2 letras al inicio (prefijo)
+        if any(c.isalpha() for c in numero):
+            # Contar letras al inicio
+            letras_inicio = 0
+            for c in numero:
+                if c.isalpha():
+                    letras_inicio += 1
+                else:
+                    break
+            
+            # Debe tener al menos 2 letras de prefijo
+            if letras_inicio < 2:
+                return False
+            
+            # El prefijo no debe ser una palabra común
+            prefijo = numero[:letras_inicio]
+            palabras_invalidas_prefijo = [
+                'FACTURA', 'TOTAL', 'SUBTOTAL', 'IVA', 'VALOR', 'FECHA',
+                'VENCIMIENTO', 'PAGO', 'CREDITO', 'CONTADO', 'CLIENTE',
+                'PROVEEDOR', 'NIT', 'TELEFONO', 'EMAIL', 'DIRECCION',
+                'CIUDAD', 'DEPARTAMENTO', 'CODIGO', 'PRODUCTO', 'CANTIDAD',
+                'PRECIO', 'DESCUENTO', 'IMPUESTO', 'RETENCION', 'NETO',
+                'BRUTO', 'BASE', 'TARIFA'
+            ]
+            
+            if prefijo in palabras_invalidas_prefijo:
+                return False
+        
+        # Debe tener al menos 3 dígitos
+        digitos = sum(1 for c in numero if c.isdigit())
+        if digitos < 3:
+            return False
+        
+        # Si el número aparece cerca de palabras clave de factura, es más probable que sea válido
+        try:
+            pos = text.upper().find(numero.upper())
+            if pos != -1:
+                # Contexto: 150 caracteres antes y después
+                contexto = text[max(0, pos-150):min(len(text), pos+len(numero)+150)].upper()
+                
+                # Palabras clave que indican que es una factura
+                palabras_clave_factura = [
+                    'FACTURA', 'ELECTRÓNICA', 'ELECTRONICA', 'VENTA', 
+                    'N°', 'NO.', 'NRO', 'NÚMERO', 'NUMERO',
+                    'INVOICE', 'BILL'
+                ]
+                
+                # Palabras que indican que NO es una factura
+                palabras_clave_negativas = [
+                    'PEDIDO', 'ORDEN', 'REMISION', 'GUIA', 'COTIZACION',
+                    'PRESUPUESTO', 'PROFORMA', 'RECIBO', 'COMPROBANTE'
+                ]
+                
+                tiene_contexto_factura = any(palabra in contexto for palabra in palabras_clave_factura)
+                tiene_contexto_negativo = any(palabra in contexto for palabra in palabras_clave_negativas)
+                
+                # Si tiene contexto de factura y NO tiene contexto negativo, es válido
+                if tiene_contexto_factura and not tiene_contexto_negativo:
+                    return True
+                
+                # Si tiene contexto negativo, rechazar
+                if tiene_contexto_negativo:
+                    return False
+        except:
+            pass
+        
+        # Si tiene un formato típico de factura (2-5 letras + 4+ dígitos), aceptar
+        if re.match(r'^[A-Z]{2,5}\d{4,}$', numero.upper()):
+            return True
+        
+        # Si solo tiene dígitos y está en contexto de factura, aceptar
+        if numero.isdigit() and len(numero) >= 5:
+            return True
+        
+        return False
     
     def _extract_razon_social(self, text: str) -> Optional[str]:
         """
@@ -577,6 +774,135 @@ class InvoiceExtractor:
                         return line
         
         return None
+    
+    def _extract_orden_compra(self, text: str) -> Optional[str]:
+        """
+        Extrae el número de Orden de Compra del texto del PDF
+        Maneja múltiples formatos y casos donde el número está dividido en líneas
+        GENÉRICO: No asume ningún prefijo específico (MED, OC, etc.)
+        
+        Args:
+            text: Texto extraído del PDF
+        
+        Returns:
+            Número de orden de compra o None si no se encuentra
+        """
+        # Patrones ordenados de más específico a más general
+        patterns = [
+            # Patrón 1: "ORDEN DE COMPRA No. XXX-2026-139" (captura cualquier formato)
+            (r'ORDEN\s+DE\s+COMPRA\s+No\.?\s*[:\s]*([A-Z0-9\-/]+)', 1),
+            
+            # Patrón 2: "Orden de Compra: XXX-2025-6327" (captura alfanumérico con guiones)
+            (r'Orden\s+de\s+Compra[:\s]+([A-Z0-9\-/]+)', 2),
+            
+            # Patrón 3: "O.C: XXX" o "OC: XXX" (captura cualquier alfanumérico)
+            (r'\bO\.?\s*C\.?\s*[:\s]+([A-Z0-9\-/]+)', 3),
+            
+            # Patrón 4: "Purchase Order: XXX" o "P.O: XXX"
+            (r'(?:Purchase\s+Order|P\.?\s*O\.?)\s*[:\s]+([A-Z0-9\-/]+)', 4),
+            
+            # Patrón 5: "Pedido:" o "Pedido No:" (común en algunos proveedores)
+            (r'Pedido\s*(?:No\.?|N[°º])?\s*[:\s]+([A-Z0-9\-/]+)', 5),
+            
+            # Patrón 6: "Ref:" o "Referencia:" seguido de número
+            (r'(?:Ref|Referencia)[:\s]+([A-Z0-9\-/]+)', 6),
+        ]
+        
+        # Intentar con patrones regex primero
+        for pattern, patron_num in patterns:
+            matches = re.findall(pattern, text, re.IGNORECASE | re.MULTILINE)
+            if matches:
+                # Si el match es una tupla (grupos múltiples), unirlos
+                if isinstance(matches[0], tuple):
+                    orden = ''.join(matches[0])
+                else:
+                    orden = matches[0]
+                
+                # Limpiar el match (remover espacios extras y normalizar)
+                orden = orden.strip()
+                orden = re.sub(r'\s+', '', orden)  # Remover espacios
+                orden = re.sub(r'-+', '-', orden)  # Normalizar guiones múltiples
+                orden = re.sub(r'/+', '/', orden)  # Normalizar slashes múltiples
+                
+                # Validar que tenga un formato razonable
+                if self._is_valid_orden_compra(orden):
+                    return orden
+        
+        # Si no encontramos con patrones, buscar manualmente en el contexto
+        # Esto maneja casos donde el número está dividido en múltiples líneas
+        lines = text.split('\n')
+        for i, line in enumerate(lines):
+            if 'orden de compra' in line.lower() or 'o.c' in line.lower() or 'oc:' in line.lower():
+                # Buscar en esta línea y las siguientes 2
+                context_lines = lines[i:min(i+3, len(lines))]
+                context = ' '.join(context_lines)
+                
+                # Buscar patrón genérico: LETRAS-NÚMEROS o LETRAS/NÚMEROS
+                # Ejemplos: MED-2025-6327, OC-12345, REF/2025/001, etc.
+                match = re.search(r'([A-Z]{2,}[\-/\s]*\d{3,}[\-/\s]*\d*)', context, re.IGNORECASE)
+                if match:
+                    orden = match.group(1)
+                    orden = re.sub(r'\s+', '', orden)
+                    orden = re.sub(r'-+', '-', orden)
+                    orden = re.sub(r'/+', '/', orden)
+                    
+                    if self._is_valid_orden_compra(orden):
+                        return orden
+                
+                # Caso especial: buscar prefijo en una línea y número en la siguiente
+                # Ejemplo: "Orden de Compra: ABC-" + "2025-6327"
+                match_prefix = re.search(r'(?:Orden\s+de\s+Compra|O\.?C\.?)[:\s]+([A-Z]{2,}[\-/\s]*)', line, re.IGNORECASE)
+                if match_prefix and i + 1 < len(lines):
+                    # Buscar número en la siguiente línea
+                    next_line = lines[i + 1]
+                    match_number = re.search(r'^[\s]*(\d{3,}[\-/\s]*\d*)', next_line)
+                    if match_number:
+                        prefix = match_prefix.group(1).strip()
+                        number = match_number.group(1).strip()
+                        orden = prefix + number
+                        orden = re.sub(r'\s+', '', orden)
+                        orden = re.sub(r'-+', '-', orden)
+                        orden = re.sub(r'/+', '/', orden)
+                        
+                        if self._is_valid_orden_compra(orden):
+                            return orden
+        
+        return None
+    
+    def _is_valid_orden_compra(self, orden: str) -> bool:
+        """
+        Valida que una orden de compra tenga un formato razonable
+        
+        Args:
+            orden: Número de orden de compra candidato
+        
+        Returns:
+            True si parece válida, False si no
+        """
+        if not orden or len(orden) < 3:
+            return False
+        
+        # Debe tener al menos una letra y un número
+        has_letter = any(c.isalpha() for c in orden)
+        has_digit = any(c.isdigit() for c in orden)
+        
+        if not (has_letter and has_digit):
+            return False
+        
+        # No debe ser solo números (eso sería un ID genérico)
+        if orden.replace('-', '').replace('/', '').isdigit():
+            return False
+        
+        # No debe tener más de 50 caracteres (probablemente no es una orden)
+        if len(orden) > 50:
+            return False
+        
+        # Filtrar palabras comunes que no son órdenes de compra
+        palabras_invalidas = ['FACTURA', 'TOTAL', 'SUBTOTAL', 'IVA', 'FECHA', 'VENCIMIENTO']
+        if any(palabra in orden.upper() for palabra in palabras_invalidas):
+            return False
+        
+        return True
     
     def _limpiar_nit(self, nit: str) -> str:
         """
@@ -694,7 +1020,7 @@ class InvoiceExtractor:
         merged = {}
         
         # Campos a combinar
-        fields = ['numero', 'fecha', 'cufe', 'valores']
+        fields = ['numero', 'fecha', 'cufe', 'valores', 'orden_compra']
         
         for field in fields:
             if xml_data.get(field):

@@ -50,6 +50,10 @@ data/temp/*
 logs/*.log
 *.log
 
+# Auto-learning progress (local)
+auto_learning_progress.json
+auto_learning_results.json
+
 # Test results
 test_result.json
 .pytest_cache/
@@ -72,5 +76,15 @@ desktop.ini
 *.swp
 
 ejemplos
-
+scripts
 docs
+auto_learning
+
+# Ejemplos (opcional - descomentar si no quieres subir ejemplos)
+# ejemplos/
+
+# Documentación (opcional - descomentar si no quieres subir docs)
+# docs/
+
+# Auto-learning (opcional - descomentar si no quieres subir scripts)
+# auto_learning/

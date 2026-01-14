@@ -4,6 +4,12 @@ psycopg2-binary==2.9.9
 # Procesamiento de PDFs
 pdfplumber==0.10.3
 
+# OCR - Sistema Híbrido
+pytesseract==0.3.10        # Tesseract OCR wrapper
+Pillow==10.1.0             # Procesamiento de imágenes
+pdf2image==1.16.3          # Convertir PDF a imágenes
+opencv-python==4.8.1.78    # Preprocesamiento de imágenes (opcional)
+
 # API REST
 fastapi==0.104.1
 uvicorn[standard]==0.24.0

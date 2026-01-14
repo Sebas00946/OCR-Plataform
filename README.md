@@ -51,6 +51,13 @@ Sube XML y/o PDF para clasificar automáticamente y extraer datos del proveedor 
 - **Valores monetarios**: subtotal, IVA, retenciones, valor neto 💰
 - Clasificación (sucursal y unidad funcional)
 
+**📚 NUEVA DOCUMENTACIÓN COMPLETA:**
+- **[ÍNDICE DE DOCUMENTACIÓN](INDICE_DOCUMENTACION_VALORES.md)** - Navegación completa
+- **[Resumen Ejecutivo](RESUMEN_EJECUTIVO_VALORES.md)** - Respuestas rápidas (5 min)
+- **[Guía Integración Node.js](GUIA_COMPLETA_INTEGRACION_NODEJS.md)** - Guía completa (20 min)
+- **[Validación PDF vs XML](VALIDACION_VALORES_PDF_XML.md)** - Análisis técnico (15 min)
+- **[Actualización Backend](ACTUALIZACION_BACKEND_NODEJS.md)** - Implementación (25 min)
+
 ### Validar Clasificación (Auto-aprendizaje)
 ```bash
 POST /api/validate
@@ -135,9 +142,11 @@ python test_api_complete.py
 ## 📊 Características
 
 - ✅ Lee XML (60%) + PDF (40%) con pesos inteligentes
+- ✅ **Extracción mejorada de PDF** (texto + tablas) 📄
 - ✅ Clasifica sucursal y unidad funcional automáticamente
 - ✅ Extrae datos del proveedor (nombre, NIT, dirección, ciudad, teléfono, email)
 - ✅ **Extrae valores monetarios** (subtotal, IVA, retenciones, valor neto) 💰
+- ✅ **Extrae Orden de Compra** (múltiples formatos) 📋
 - ✅ Sistema de auto-aprendizaje
 - ✅ Keywords parametrizables en base de datos
 - ✅ API REST lista para Node.js
@@ -248,12 +257,16 @@ curl http://localhost:8000/api/logs
 - **Logs del Sistema**: http://localhost:8000/api/logs
 
 **📚 Documentación:**
-- **⭐ Guía Node.js - Valores**: `GUIA_NODEJS_VALORES.md` - **EMPIEZA AQUÍ** 💰
-- **📋 Índice General**: `INDICE_DOCUMENTACION.md` - Ver toda la documentación
-- **Resumen para Node.js**: `RESUMEN_PARA_NODEJS.md`
-- **Guía completa Node.js**: `GUIA_INTEGRACION_NODEJS.md`
-- **Arquitectura del Sistema**: `ARQUITECTURA_SISTEMA.md`
-- **Extracción de Proveedor**: `EXTRACCION_PROVEEDOR.md`
-- **Extracción de Valores Monetarios**: `EXTRACCION_VALORES_MONETARIOS.md`
-- **Sistema de Logging**: `LOGGING_SISTEMA.md`
-- **Resumen de Clasificación**: `RESUMEN_CLASIFICACION.md`
+
+### 🚀 Para Integración Node.js (EMPIEZA AQUÍ)
+- **⭐ RESUMEN FINAL**: `PARA_NODEJS_RESUMEN_FINAL.md` - **TODO LO QUE NECESITAS** 💰
+- **📖 Guía Completa**: `GUIA_INTEGRACION_NODEJS_CLASSIFY.md` - Documentación detallada
+- **💻 Ejemplo Código**: `ejemplo_integracion_nodejs.js` - Código funcional completo
+- **📊 Flujo Visual**: `FLUJO_CLASSIFY_VISUAL.md` - Diagramas del flujo completo
+- **⚡ Resumen Rápido**: `RESUMEN_CLASSIFY_ENDPOINT.md` - Referencia rápida
+
+### 📖 Documentación Técnica
+- **🏗️ Análisis Arquitectura**: `ANALISIS_ARQUITECTURA_TECNICO.md` - Análisis técnico completo
+- **🤖 Propuesta IA**: `PROPUESTA_MEJORAS_IA.md` - Mejoras con IA (opcional)
+- **📋 Índice General**: `INDICE_DOCUMENTACION.md` - Ver toda la documentación (si existe)
+- **Sistema de Logging**: `LOGGING_SISTEMA.md` - Sistema de logs (si existe)

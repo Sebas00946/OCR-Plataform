@@ -82,7 +82,6 @@ FOLDER_MAPPING = {
     "7. DUITAMA/7.3. GASTOS": {"sucursal_id": 1, "unidad_id": 11},                     # Nacional - Administración (temporal)
 }
 
-
 class AutoLearningProcessor:
     """Procesador de auto-aprendizaje desde buzón"""
     
@@ -345,7 +344,7 @@ class AutoLearningProcessor:
             return all_folders
             
         except Exception as e:
-            print(f"⚠️  Error obteniendo subcarpetas: {e}")
+            print(f"⚠️ Error obteniendo subcarpetas: {e}")
             return []
     
     def get_emails_from_folder_and_subfolders(self, folder_id, start_date="2025-01-01"):
@@ -359,22 +358,22 @@ class AutoLearningProcessor:
             if emails:
                 all_emails.extend(emails)
                 emails_by_subfolder['[Carpeta Principal]'] = len(emails)
-                print(f"   📧 Carpeta principal: {len(emails)} correos")
+                print(f"📧 Carpeta principal: {len(emails)} correos")
         except Exception as e:
-            print(f"⚠️  Error obteniendo correos de carpeta principal: {e}")
+            print(f"⚠️ Error obteniendo correos de carpeta principal: {e}")
         
         # Obtener todas las subcarpetas
         try:
             subfolders = self.get_all_subfolders_recursive(folder_id)
             
             if subfolders:
-                print(f"   📂 Encontradas {len(subfolders)} subcarpetas (proveedores)")
-                print(f"   🔍 Obteniendo correos de cada proveedor...")
+                print(f"📂 Encontradas {len(subfolders)} subcarpetas (proveedores)")
+                print(f"🔍 Obteniendo correos de cada proveedor...")
                 
                 for idx, subfolder in enumerate(subfolders, 1):
                     try:
                         subfolder_name = subfolder['name']
-                        print(f"      [{idx}/{len(subfolders)}] 📁 {subfolder_name}...", end=" ")
+                        print(f"[{idx}/{len(subfolders)}] 📁 {subfolder_name}...", end=" ")
                         
                         subfolder_emails = self.get_emails_from_folder(subfolder['id'], start_date)
                         email_count = len(subfolder_emails) if subfolder_emails else 0
