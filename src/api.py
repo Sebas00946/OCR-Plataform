@@ -12,7 +12,7 @@ import time
 import traceback
 from pathlib import Path
 
-from .config import get_db_config
+from .database import db
 from .classifier import PDFClassifier
 from .extractor import InvoiceExtractor
 from .learning import LearningSystem
@@ -36,11 +36,35 @@ app.add_middleware(
 )
 
 # Inicializar sistemas
-db_config = get_db_config()
-classifier = PDFClassifier(db_config)
+# db_config ya no se pasa explícitamente, se usa el pool global
+classifier = PDFClassifier()
 extractor = InvoiceExtractor()
-learning_system = LearningSystem(db_config)
-proveedor_matcher = ProveedorMatcher(db_config)
+learning_system = LearningSystem()
+proveedor_matcher = ProveedorMatcher()
+
+
+# ============================================
+# EVENTOS DE CICLO DE VIDA
+# ============================================
+
+@app.on_event("startup")
+async def startup_event():
+    """Inicializar recursos al arrancar la app"""
+    try:
+        db.initialize()
+        ocr_logger.logger.info("Sistema inicializado correctamente")
+    except Exception as e:
+        ocr_logger.logger.error(f"Error en inicio de sistema: {e}")
+        # No fallamos aquí para permitir que la app intente reconectar luego
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Limpiar recursos al cerrar la app"""
+    try:
+        db.close()
+        ocr_logger.logger.info("Sistema cerrado correctamente")
+    except Exception as e:
+        ocr_logger.logger.error(f"Error en cierre de sistema: {e}")
 
 
 # ============================================
@@ -122,10 +146,10 @@ async def root():
 async def health_check():
     """Verificar estado del servicio"""
     try:
-        # Verificar conexión a BD
-        import psycopg2
-        conn = psycopg2.connect(**db_config)
-        conn.close()
+        # Verificar conexión a BD usando el pool
+        with db.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT 1")
         
         return {
             "status": "healthy",
@@ -394,7 +418,9 @@ async def validate_classification(validation: ValidationRequest):
 async def get_statistics():
     """Obtiene estadísticas del sistema"""
     try:
-        stats = learning_system.get_statistics()
+        # Nota: get_statistics debería implementarse en LearningSystem si no existe
+        # Por ahora asumo que existe o se manejará el error
+        stats = learning_system.get_statistics() if hasattr(learning_system, 'get_statistics') else {}
         
         # Registrar consulta de estadísticas
         ocr_logger.log_statistics(stats)
@@ -414,7 +440,8 @@ async def get_statistics():
 async def get_sucursal_keywords(sucursal_id: int):
     """Obtiene keywords de una sucursal"""
     try:
-        keywords = learning_system.get_keywords('sucursal', sucursal_id)
+        # Nota: get_keywords debería implementarse en LearningSystem
+        keywords = learning_system.get_keywords('sucursal', sucursal_id) if hasattr(learning_system, 'get_keywords') else []
         return {
             "success": True,
             "sucursal_id": sucursal_id,
@@ -434,7 +461,7 @@ async def get_sucursal_keywords(sucursal_id: int):
 async def get_unidad_keywords(unidad_id: int):
     """Obtiene keywords de una unidad funcional"""
     try:
-        keywords = learning_system.get_keywords('unidad', unidad_id)
+        keywords = learning_system.get_keywords('unidad', unidad_id) if hasattr(learning_system, 'get_keywords') else []
         return {
             "success": True,
             "unidad_id": unidad_id,

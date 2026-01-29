@@ -6,7 +6,10 @@ Optimizado para pdfplumber con extracción mejorada
 import xml.etree.ElementTree as ET
 import pdfplumber
 import re
+import traceback
+import os
 from typing import Dict, Tuple, Optional
+from .logger import ocr_logger
 
 
 class InvoiceExtractor:
@@ -68,6 +71,10 @@ class InvoiceExtractor:
         Returns:
             Tuple[str, float, Dict]: (texto_extraido, calidad_0_a_1, datos_estructurados)
         """
+        if not os.path.exists(xml_path):
+            ocr_logger.log_error("InvoiceExtractor", f"Archivo XML no encontrado: {xml_path}")
+            return "", 0.0, {'proveedor': {}, 'factura': {}, 'cliente': {}}
+
         try:
             tree = ET.parse(xml_path)
             root = tree.getroot()
@@ -441,13 +448,22 @@ class InvoiceExtractor:
             return text.upper(), quality, structured_data
             
         except Exception as e:
-            print(f"⚠️  Error al leer XML: {e}")
+            ocr_logger.log_error(
+                endpoint="InvoiceExtractor.extract_from_xml",
+                error_message=str(e),
+                error_type=type(e).__name__,
+                traceback_info=traceback.format_exc()
+            )
             return "", 0.0, {'proveedor': {}, 'factura': {}, 'cliente': {}}
     
     def extract_from_pdf(self, pdf_path: str) -> Tuple[str, Dict]:
         """
         Extrae texto del PDF, con fallback OCR si no hay texto seleccionable
         """
+        if not os.path.exists(pdf_path):
+            ocr_logger.log_error("InvoiceExtractor", f"Archivo PDF no encontrado: {pdf_path}")
+            return "", {'proveedor': {}, 'factura': {}}
+
         try:
             text_parts = []
             
@@ -473,6 +489,7 @@ class InvoiceExtractor:
             # Limpiar texto (remover caracteres problemáticos pero mantener estructura)
             full_text = self._clean_pdf_text(full_text)
             
+
             # Fallback OCR si el texto es insuficiente
             if len(full_text.strip()) < 100:
                 ocr_text = self._ocr_pdf(pdf_path)
@@ -480,6 +497,8 @@ class InvoiceExtractor:
                     full_text = self._clean_pdf_text(ocr_text)
             
             print(f"📄 PDF extraído: {len(full_text)} caracteres")
+            ocr_logger.logger.info(f"PDF extraído: {len(full_text)} caracteres")
+
             
             # Extraer datos estructurados
             structured_data = self._extract_pdf_structured_data(full_text)
@@ -490,9 +509,12 @@ class InvoiceExtractor:
             return full_text.upper(), structured_data
             
         except Exception as e:
-            print(f"⚠️  Error al leer PDF: {e}")
-            import traceback
-            traceback.print_exc()
+            ocr_logger.log_error(
+                endpoint="InvoiceExtractor.extract_from_pdf",
+                error_message=str(e),
+                error_type=type(e).__name__,
+                traceback_info=traceback.format_exc()
+            )
             return "", {'proveedor': {}, 'factura': {}}
     
     def _clean_pdf_text(self, text: str) -> str:
@@ -1220,6 +1242,7 @@ class InvoiceExtractor:
                 return invoice_root
         except Exception as e:
             # Si falla, retornar None para usar el root original
+            ocr_logger.logger.debug(f"No se pudo extraer invoice embebido: {e}")
             pass
         
         return None

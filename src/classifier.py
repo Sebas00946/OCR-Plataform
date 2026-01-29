@@ -2,10 +2,10 @@
 Clasificador de facturas basado en keywords de PostgreSQL
 Con validación de coherencia sucursal-unidad funcional
 """
-import psycopg2
 import psycopg2.extras
 import re
 from typing import Dict, Tuple, Optional, List
+from .database import db
 
 
 class PDFClassifier:
@@ -20,14 +20,15 @@ class PDFClassifier:
         'FACTURA', 'TOTAL', 'SUBTOTAL', 'IVA', 'VALOR', 'CANTIDAD',
     }
     
-    def __init__(self, db_config: Dict):
+    def __init__(self, db_config: Optional[Dict] = None):
         """
         Inicializa el clasificador
         
         Args:
-            db_config: Configuración de conexión a PostgreSQL
+            db_config: Configuración de conexión (obsoleto, se usa pool global)
         """
-        self.db_config = db_config
+        # Se mantiene por compatibilidad, pero ya no se usa directamente
+        pass
     
     def classify(self, text: str, xml_weight: float = 1.0, pdf_weight: float = 1.0) -> Tuple[Dict, Dict]:
         """
@@ -42,24 +43,25 @@ class PDFClassifier:
         Returns:
             Tuple con (info_sucursal, info_unidad)
         """
-        conn = psycopg2.connect(**self.db_config)
-        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-        
-        try:
-            # 1. Clasificar sucursal primero
-            sucursal = self._classify_sucursal(cursor, text)
+        # Usar el pool de conexiones
+        with db.get_connection() as conn:
+            cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
             
-            # 2. Clasificar unidad funcional considerando la sucursal
-            unidad = self._classify_unidad(cursor, text, sucursal.get('id') if sucursal['success'] else None)
-            
-            # 3. Validar coherencia y ajustar si es necesario
-            sucursal, unidad = self._validar_coherencia(cursor, sucursal, unidad, text)
-            
-            return sucursal, unidad
-            
-        finally:
-            cursor.close()
-            conn.close()
+            try:
+                # 1. Clasificar sucursal primero
+                sucursal = self._classify_sucursal(cursor, text)
+                
+                # 2. Clasificar unidad funcional considerando la sucursal
+                unidad = self._classify_unidad(cursor, text, sucursal.get('id') if sucursal['success'] else None)
+                
+                # 3. Validar coherencia y ajustar si es necesario
+                sucursal, unidad = self._validar_coherencia(cursor, sucursal, unidad, text)
+                
+                return sucursal, unidad
+                
+            finally:
+                cursor.close()
+                # La conexión se devuelve al pool automáticamente al salir del context manager
     
     def _is_valid_keyword(self, keyword: str) -> bool:
         """
