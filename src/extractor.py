@@ -446,15 +446,7 @@ class InvoiceExtractor:
     
     def extract_from_pdf(self, pdf_path: str) -> Tuple[str, Dict]:
         """
-        Extrae texto del PDF usando pdfplumber con extracción mejorada
-        
-        Mejoras:
-        - Extracción por tabla y texto
-        - Limpieza de caracteres especiales
-        - Mejor detección de campos clave
-        
-        Returns:
-            Tuple[str, Dict]: (texto_extraido, datos_estructurados)
+        Extrae texto del PDF, con fallback OCR si no hay texto seleccionable
         """
         try:
             text_parts = []
@@ -481,10 +473,19 @@ class InvoiceExtractor:
             # Limpiar texto (remover caracteres problemáticos pero mantener estructura)
             full_text = self._clean_pdf_text(full_text)
             
+            # Fallback OCR si el texto es insuficiente
+            if len(full_text.strip()) < 100:
+                ocr_text = self._ocr_pdf(pdf_path)
+                if ocr_text:
+                    full_text = self._clean_pdf_text(ocr_text)
+            
             print(f"📄 PDF extraído: {len(full_text)} caracteres")
             
             # Extraer datos estructurados
             structured_data = self._extract_pdf_structured_data(full_text)
+            valores = self._extract_pdf_values(full_text)
+            if valores:
+                structured_data['factura']['valores'] = valores
             
             return full_text.upper(), structured_data
             
@@ -555,6 +556,104 @@ class InvoiceExtractor:
             structured_data['factura']['orden_compra'] = orden_compra
         
         return structured_data
+    
+    def _ocr_pdf(self, pdf_path: str) -> str:
+        try:
+            from pdf2image import convert_from_path
+            import pytesseract
+            import cv2
+            import numpy as np
+        except Exception:
+            return ""
+        
+        try:
+            images = convert_from_path(pdf_path, dpi=300)
+            ocr_text_parts = []
+            for img in images:
+                open_cv_image = np.array(img.convert('RGB'))[:, :, ::-1]
+                gray = cv2.cvtColor(open_cv_image, cv2.COLOR_BGR2GRAY)
+                gray = cv2.bilateralFilter(gray, 9, 75, 75)
+                _, thr = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+                ocr_text = pytesseract.image_to_string(thr, lang='spa')
+                ocr_text_parts.append(ocr_text or "")
+            return '\n'.join(ocr_text_parts)
+        except Exception:
+            return ""
+    
+    def _parse_money(self, s: str) -> Optional[float]:
+        if not s:
+            return None
+        s = s.replace('COP', '').replace('$', '').replace(' ', '')
+        s = s.replace('\u00A0', '')
+        if s.count(',') > 1 and '.' not in s:
+            s = s.replace(',', '')
+        elif s.count('.') > 1 and ',' not in s:
+            s = s.replace('.', '')
+        if ',' in s and '.' in s:
+            if s.rfind(',') > s.rfind('.'):
+                s = s.replace('.', '').replace(',', '.')
+            else:
+                s = s.replace(',', '')
+        else:
+            if ',' in s and '.' not in s:
+                s = s.replace('.', '').replace(',', '.')
+            elif '.' in s and ',' not in s:
+                s = s.replace(',', '')
+        s = re.sub(r'[^\d\.]', '', s)
+        try:
+            return float(s) if s else None
+        except Exception:
+            return None
+    
+    def _extract_amount_near(self, text: str, labels: list) -> Optional[float]:
+        txt = text.upper()
+        for label in labels:
+            for m in re.finditer(label, txt):
+                start = max(0, m.start() - 80)
+                end = min(len(txt), m.end() + 80)
+                ctx = txt[start:end]
+                nums = re.findall(r'[$]?\s*[0-9]{1,3}(?:[.,][0-9]{3})*(?:[.,][0-9]{2})?', ctx)
+                if nums:
+                    for n in reversed(nums):
+                        val = self._parse_money(n)
+                        if val is not None:
+                            return val
+        return None
+    
+    def _extract_pdf_values(self, text: str) -> Dict:
+        valores = {}
+        total_labels = [
+            r'TOTAL\s+A\s+PAGAR', r'TOTAL\s+FACTURA', r'VALOR\s+TOTAL', r'TOTAL\s*:$', r'^TOTAL\s'
+        ]
+        subtotal_labels = [
+            r'SUBTOTAL', r'VALOR\s+BRUTO', r'TOTAL\s+SIN\s+IMPUESTOS', r'BASE\s+IMPONIBLE'
+        ]
+        iva_labels = [
+            r'IVA', r'IMPUESTO\s+AL\s+VALOR\s+AGREGADO', r'TAX'
+        ]
+        
+        total = self._extract_amount_near(text, total_labels)
+        if total is not None:
+            valores['total'] = total
+            valores['total_formatted'] = f"${total:,.2f}"
+        
+        subtotal = self._extract_amount_near(text, subtotal_labels)
+        if subtotal is not None:
+            valores['subtotal'] = subtotal
+            valores['subtotal_formatted'] = f"${subtotal:,.2f}"
+        
+        iva = self._extract_amount_near(text, iva_labels)
+        if iva is not None:
+            valores['iva'] = iva
+            valores['iva_formatted'] = f"${iva:,.2f}"
+        
+        if 'iva' not in valores and 'subtotal' in valores and 'total' in valores:
+            iva_calc = valores['total'] - valores['subtotal']
+            if iva_calc > 0:
+                valores['iva'] = iva_calc
+                valores['iva_formatted'] = f"${iva_calc:,.2f}"
+        
+        return valores
     
     def _extract_nit_from_text(self, text: str) -> Optional[str]:
         """
@@ -1019,8 +1118,8 @@ class InvoiceExtractor:
         """
         merged = {}
         
-        # Campos a combinar
-        fields = ['numero', 'fecha', 'cufe', 'valores', 'orden_compra']
+        # Campos simples
+        fields = ['numero', 'fecha', 'cufe', 'orden_compra']
         
         for field in fields:
             if xml_data.get(field):
@@ -1028,8 +1127,57 @@ class InvoiceExtractor:
             elif pdf_data.get(field):
                 merged[field] = pdf_data[field]
         
+        # Merging especial para valores (deep merge)
+        xml_valores = xml_data.get('valores', {})
+        pdf_valores = pdf_data.get('valores', {})
+        
+        if xml_valores or pdf_valores:
+            # Empezar con PDF como base (tiene menos prioridad)
+            merged_valores = pdf_valores.copy()
+            
+            # Actualizar con valores de XML (mayor prioridad)
+            # Solo actualizar si el valor no es nulo/vacío
+            for k, v in xml_valores.items():
+                if v is not None:
+                    merged_valores[k] = v
+            
+            merged['valores'] = self._sanitize_values(merged_valores)
+            
         return merged
     
+    def _sanitize_values(self, valores: Dict) -> Dict:
+        """
+        Sanea y valida los valores financieros para eliminar inconsistencias
+        """
+        if not valores:
+            return valores
+            
+        total = valores.get('total', 0)
+        subtotal = valores.get('subtotal', 0)
+        iva = valores.get('iva', 0)
+        
+        # 1. Si total y subtotal son iguales (o casi), IVA debe ser 0
+        # Esto corrige casos donde PDF detecta basura como IVA cuando no debería haber
+        if total and subtotal and abs(total - subtotal) < 100.0:  # Margen de error de 100 pesos
+            if iva > 0:
+                valores['iva'] = 0.0
+                valores['iva_formatted'] = "$0.00"
+                iva = 0.0
+            
+        # 2. Si IVA es muy pequeño comparado con subtotal (posible porcentaje o basura)
+        # O si es muy pequeño en absoluto (< 50 pesos) y subtotal es grande (> 10000)
+        if iva > 0 and subtotal > 10000:
+            if iva < 50:
+                valores['iva'] = 0.0
+                valores['iva_formatted'] = "$0.00"
+        
+        # 3. Recalcular formateados por consistencia
+        for key in ['total', 'subtotal', 'iva', 'tax_exclusive', 'tax_inclusive', 'valor_neto']:
+            if key in valores and isinstance(valores[key], (int, float)):
+                valores[f'{key}_formatted'] = f"${valores[key]:,.2f}"
+                
+        return valores
+
     def _extract_text(self, root, xpaths: list) -> str:
         """Extrae texto del primer xpath que encuentre"""
         for xpath in xpaths:
