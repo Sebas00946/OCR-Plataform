@@ -82,11 +82,8 @@ desktop.ini
 *.bak
 *.swp
 
-# Ejemplos (mantener en repo por ahora)
-# ejemplos/
+# Scripts
+scripts/
 
-# Scripts (mantener en repo por ahora)
-# scripts/
-
-# Tests (mantener en repo)
-# tests/
+#Tests
+tests/
