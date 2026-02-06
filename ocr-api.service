@@ -1,0 +1,24 @@
+[Unit]
+Description=OCR Classification API
+After=network.target postgresql.service
+
+[Service]
+Type=notify
+User=www-data
+Group=www-data
+WorkingDirectory=/var/www/ocr-api
+Environment="PATH=/var/www/ocr-api/venv/bin"
+Environment="ENVIRONMENT=production"
+ExecStart=/var/www/ocr-api/venv/bin/gunicorn src.api:app \
+    --workers 4 \
+    --worker-class uvicorn.workers.UvicornWorker \
+    --bind 127.0.0.1:8000 \
+    --timeout 300 \
+    --access-logfile /var/www/ocr-api/logs/access.log \
+    --error-logfile /var/www/ocr-api/logs/error.log \
+    --log-level info
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

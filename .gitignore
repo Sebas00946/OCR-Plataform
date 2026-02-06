@@ -38,16 +38,23 @@ ENV/
 .env.local
 .env.*.local
 
-# Data directories
-data/uploads/*
-data/results/*
-data/temp/*
-!data/uploads/.gitkeep
-!data/results/.gitkeep
-!data/temp/.gitkeep
+# Mantener archivos de ejemplo de configuración
+!.env.example
+!.env.development
+!.env.production
+
+# Data directories (EXCLUIR COMPLETAMENTE - Solo local)
+data/
+!data/.gitkeep
+
+# Database scripts (EXCLUIR COMPLETAMENTE - Solo local)
+database/
+
+# Auto-learning (EXCLUIR COMPLETAMENTE - Solo local)
+auto_learning/
 
 # Logs
-logs/*.log
+logs/
 *.log
 
 # Auto-learning progress (local)
@@ -75,16 +82,11 @@ desktop.ini
 *.bak
 *.swp
 
-ejemplos
-scripts
-docs
-auto_learning
-
-# Ejemplos (opcional - descomentar si no quieres subir ejemplos)
+# Ejemplos (mantener en repo por ahora)
 # ejemplos/
 
-# Documentación (opcional - descomentar si no quieres subir docs)
-# docs/
+# Scripts (mantener en repo por ahora)
+# scripts/
 
-# Auto-learning (opcional - descomentar si no quieres subir scripts)
-# auto_learning/
+# Tests (mantener en repo)
+# tests/

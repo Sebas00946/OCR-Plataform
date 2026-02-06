@@ -18,18 +18,21 @@ from .extractor import InvoiceExtractor
 from .learning import LearningSystem
 from .logger import ocr_logger
 from .proveedor_matcher import ProveedorMatcher
+from .config import get_cors_origins, is_production, is_debug
 
 # Crear app
 app = FastAPI(
     title="OCR Classification API",
     description="API para clasificación automática de facturas usando XML + PDF",
-    version="1.0.0"
+    version="1.0.0",
+    debug=is_debug()
 )
 
-# CORS para Node.js
+# CORS configurado por entorno
+cors_origins = get_cors_origins()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # En producción, especificar dominios
+    allow_origins=cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
