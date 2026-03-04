@@ -9,7 +9,7 @@ if __name__ == "__main__":
     environment = os.getenv('ENVIRONMENT', 'development')
     debug = os.getenv('DEBUG', 'True').lower() in ('true', '1', 'yes')
     port = int(os.getenv('PORT', 8000))
-    host = os.getenv('HOST', '0.0.0.0')
+    host = os.getenv('HOST', 'localhost')
     
     print(f"🚀 Iniciando servidor en modo: {environment}")
     print(f"📍 Host: {host}:{port}")

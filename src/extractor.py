@@ -235,6 +235,16 @@ class InvoiceExtractor:
             if orden_compra:
                 structured_data['factura']['orden_compra'] = orden_compra.strip()
             
+            # Note (puede contener información importante como código de sucursal)
+            note = self._extract_text(invoice_root, [
+                './/cbc:Note',
+            ])
+            if note:
+                structured_data['factura']['note'] = note.strip()
+                structured_data['factura']['notas'] = note.strip()  # Alias
+                # Agregar al texto para búsqueda
+                parts.append(note)
+            
             # ============================================
             # VALORES MONETARIOS
             # ============================================
