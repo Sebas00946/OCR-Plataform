@@ -88,3 +88,5 @@ scripts/
 #Tests
 tests/
 .env.production
+
+docs
