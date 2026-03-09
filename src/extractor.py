@@ -370,11 +370,14 @@ class InvoiceExtractor:
                     valores['iva'] = iva_calculado
                     valores['iva_formatted'] = f"${iva_calculado:,.2f}"
             
-            # Calcular valor neto (total - retenciones)
+            # Calcular valor neto (total - retenciones) y redondear
             if 'total' in valores and 'total_retenciones' in valores:
                 valor_neto = valores['total'] - valores['total_retenciones']
-                valores['valor_neto'] = valor_neto
-                valores['valor_neto_formatted'] = f"${valor_neto:,.2f}"
+                # Redondear al peso más cercano para coincidir con PDFs
+                valor_neto_redondeado = round(valor_neto)
+                valores['valor_neto'] = valor_neto_redondeado
+                valores['valor_neto_exacto'] = valor_neto  # Guardar valor exacto también
+                valores['valor_neto_formatted'] = f"${valor_neto_redondeado:,.2f}"
             
             # Agregar valores a la estructura
             if valores:
