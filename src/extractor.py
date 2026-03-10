@@ -372,12 +372,29 @@ class InvoiceExtractor:
             
             # Calcular valor neto (total - retenciones) y redondear
             if 'total' in valores and 'total_retenciones' in valores:
+                # Guardar el total original de la factura (con IVA)
+                total_factura_original = valores['total']
+                valores['total_factura'] = total_factura_original
+                valores['total_factura_formatted'] = f"${total_factura_original:,.2f}"
+                
+                # Calcular valor neto (lo que realmente se paga)
                 valor_neto = valores['total'] - valores['total_retenciones']
                 # Redondear al peso más cercano para coincidir con PDFs
                 valor_neto_redondeado = round(valor_neto)
                 valores['valor_neto'] = valor_neto_redondeado
                 valores['valor_neto_exacto'] = valor_neto  # Guardar valor exacto también
                 valores['valor_neto_formatted'] = f"${valor_neto_redondeado:,.2f}"
+                
+                # ⚠️ IMPORTANTE: Reemplazar 'total' con 'valor_neto' para que la API de Node.js
+                # guarde el valor correcto (lo que se paga) en trazabilidad_facturas.valor_total
+                valores['total'] = valor_neto_redondeado
+                valores['total_formatted'] = f"${valor_neto_redondeado:,.2f}"
+                
+                # También actualizar tax_inclusive si existe (debe ser igual al valor neto)
+                if 'tax_inclusive' in valores:
+                    valores['tax_inclusive_original'] = valores['tax_inclusive']
+                    valores['tax_inclusive'] = valor_neto_redondeado
+                    valores['tax_inclusive_formatted'] = f"${valor_neto_redondeado:,.2f}"
             
             # Agregar valores a la estructura
             if valores:
