@@ -24,3 +24,7 @@ requests==2.31.0
 
 # Azure Blob Storage
 azure-storage-blob==12.19.0
+
+# IA — Qdrant (opcional, instalar solo si se usa)
+# qdrant-client==1.7.0
+# sentence-transformers==2.3.1

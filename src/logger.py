@@ -238,7 +238,6 @@ class OCRLogger:
         
         log_message = f"ERROR en {endpoint} - {error_message}"
         self.logger.error(log_message + f" - Data: {json.dumps(error_data)}")
-        print(f"❌ Log de error guardado: {endpoint} - {error_message}")
     
     def get_request_count(self) -> Dict[str, int]:
         """

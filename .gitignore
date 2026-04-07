@@ -90,3 +90,4 @@ tests/
 .env.production
 
 docs
+example

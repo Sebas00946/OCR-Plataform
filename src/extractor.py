@@ -526,8 +526,7 @@ class InvoiceExtractor:
                 if ocr_text:
                     full_text = self._clean_pdf_text(ocr_text)
             
-            print(f"📄 PDF extraído: {len(full_text)} caracteres")
-            ocr_logger.logger.info(f"PDF extraído: {len(full_text)} caracteres")
+            ocr_logger.logger.info(f"PDF extraido: {len(full_text)} caracteres")
 
             
             # Extraer datos estructurados
@@ -710,9 +709,21 @@ class InvoiceExtractor:
     def _extract_nit_from_text(self, text: str) -> Optional[str]:
         """
         Extrae el NIT del proveedor del texto
-        Busca el primer NIT que aparece (generalmente es del proveedor)
+        Busca específicamente el NIT DEL EMISOR (proveedor), no del adquiriente
         """
-        # Patrones para NIT
+        # PRIORIDAD 1: Buscar "NIT DEL EMISOR" explícitamente
+        pattern_emisor = r'NIT\s+DEL\s+EMISOR[:\s]*(\d{3}[\.\s]?\d{3}[\.\s]?\d{3}|\d{9,10})\s*[-\s]*(\d)?'
+        match = re.search(pattern_emisor, text, re.IGNORECASE)
+        if match:
+            nit_base = match.group(1)
+            nit_limpio = self._limpiar_nit(nit_base)
+            if len(nit_limpio) >= 9:
+                return nit_limpio
+        
+        # PRIORIDAD 2: Buscar NIT cerca de "EMISOR" o "VENDEDOR" (primeros 2000 caracteres)
+        texto_inicio = text[:2000]
+        
+        # Patrones para NIT del emisor
         patterns = [
             # NIT: 900.462.203 - 5 o NIT: 900.462.203-5
             r'NIT[:\s]*[:\.]?\s*(\d{3}[\.\s]?\d{3}[\.\s]?\d{3})\s*[-\s]*(\d)?',
@@ -720,12 +731,10 @@ class InvoiceExtractor:
             r'Nit[:\s]*[:\.]?\s*(\d{9,10})\s*[-\s]*(\d)?',
             # N.I.T.: 900462203
             r'N\.?I\.?T\.?[:\s]*(\d{9,10})\s*[-\s]*(\d)?',
-            # Solo número con formato 900.123.456
-            r'(\d{3}\.\d{3}\.\d{3})\s*[-\s]*(\d)?',
         ]
         
         for pattern in patterns:
-            match = re.search(pattern, text, re.IGNORECASE)
+            match = re.search(pattern, texto_inicio, re.IGNORECASE)
             if match:
                 nit_base = match.group(1)
                 # Limpiar el NIT
@@ -737,37 +746,59 @@ class InvoiceExtractor:
     
     def _extract_numero_factura(self, text: str) -> Optional[str]:
         """
-        Extrae el número de factura del texto del PDF
-        Busca diferentes formatos comunes en facturas colombianas
-        GENÉRICO: Captura cualquier prefijo de factura
-        PRIORIDAD: Prefijos más largos primero para evitar capturas parciales (FQE antes que FE)
+        Extrae el número de factura del texto del PDF.
+        Busca diferentes formatos comunes en facturas colombianas.
+        
+        Formatos soportados:
+        - FQE151179
+        - 5808- 31443638 (con guión y espacio)
+        - FEL-43853 (prefijo con guión)
+        - FEPN-12345
         """
+        # PRIORIDAD MÁXIMA: "NÚMERO DE FACTURA:" con captura hasta palabra en mayúsculas
+        # Esto captura correctamente "FEL-43853" y "5808- 31443638" antes de "FORMA DE PAGO"
+        pattern_numero_factura = r'N[ÚU]MERO\s+DE\s+FACTURA[:\s]+([A-Z0-9][-A-Z0-9\s]*?)(?=\s+[A-Z]{4,}|$)'
+        match = re.search(pattern_numero_factura, text, re.IGNORECASE)
+        if match:
+            numero = match.group(1).strip()
+            # Limpiar espacios múltiples internos pero mantener guiones y espacios únicos
+            numero = re.sub(r'\s+', ' ', numero)
+            numero = numero.upper()
+            
+            # Validar que sea un número de factura válido
+            if self._is_valid_numero_factura(numero, text):
+                return numero
+        
         # Patrones ordenados por PRIORIDAD (más específicos primero)
         patterns = [
-            # PRIORIDAD 1: Patrones con contexto de "FACTURA ELECTRÓNICA"
-            (r'FACTURA\s+ELECTR[OÓ]NICA[^\n]*N[°º]\s*([A-Z]{2,5}\d+)', 1, 'FACTURA ELECTRONICA N°'),
+            # PRIORIDAD 2: Patrones con contexto de "FACTURA ELECTRÓNICA"
+            (r'FACTURA\s+ELECTR[OÓ]NICA[^\n]*N[°º]\s*([A-Z0-9]{2,5}[-\s]?\d+(?:[-\s]\d+)?)', 2, 'FACTURA ELECTRONICA N°'),
             
-            # PRIORIDAD 2: Patrones con "N°" o "No."
-            (r'N[°º]\.?\s*([A-Z]{2,5}\d+)', 2, 'N°'),
-            (r'No\.?\s*([A-Z]{2,5}\d+)', 3, 'No.'),
+            # PRIORIDAD 3: Patrones con "N°" o "No."
+            (r'N[°º]\.?\s*(?:FACTURA[:\s]+)?([A-Z0-9]{2,5}[-\s]?\d+(?:[-\s]\d+)?)', 3, 'N°'),
+            (r'No\.?\s*(?:FACTURA[:\s]+)?([A-Z0-9]{2,5}[-\s]?\d+(?:[-\s]\d+)?)', 4, 'No.'),
             
-            # PRIORIDAD 3: Prefijos específicos de 3+ letras (más largos primero)
-            # Esto evita que "FE" capture "FQE"
-            (r'\b(FEPN\d+)\b', 4, 'FEPN'),
-            (r'\b(FQE\d+)\b', 5, 'FQE'),
-            (r'\b(FVE\d+)\b', 6, 'FVE'),
+            # PRIORIDAD 4: Prefijos específicos con guión (FEL-43853, FEPN-12345)
+            (r'\b([A-Z]{2,5}[-]\d+)\b', 5, 'Prefijo-Número'),
             
-            # PRIORIDAD 4: Prefijos de 2 letras (con lookbehind/lookahead)
-            # Solo si no hay letra antes o después
-            (r'(?<![A-Z])\b(FE\d+)\b(?![A-Z])', 7, 'FE'),
-            (r'(?<![A-Z])\b(FV\d+)\b(?![A-Z])', 8, 'FV'),
+            # PRIORIDAD 5: Números con guión y espacio (5808- 31443638)
+            (r'\b(\d{3,5}[-\s]+\d{5,})\b', 6, 'Número-Número'),
             
-            # PRIORIDAD 5: Nro. Doc. o Número Factura
-            (r'Nro\.?\s*Doc\.?[:\s]*([A-Z]{1,5}\d+)', 9, 'Nro. Doc.'),
-            (r'N[uú]mero\s*(?:de\s*)?Factura[:\s]*([A-Z]{0,5}\d+)', 10, 'Número Factura'),
+            # PRIORIDAD 6: Prefijos específicos de 3+ letras sin guión
+            (r'\b(FEPN\d+)\b', 7, 'FEPN'),
+            (r'\b(FQE\d+)\b', 8, 'FQE'),
+            (r'\b(FVE\d+)\b', 9, 'FVE'),
+            (r'\b(FEL\d+)\b', 10, 'FEL'),
             
-            # PRIORIDAD 6: Patrón genérico (último recurso)
-            (r'\b([A-Z]{2,5}\d{4,})\b', 11, 'Genérico'),
+            # PRIORIDAD 7: Prefijos de 2 letras (con lookbehind/lookahead)
+            (r'(?<![A-Z])\b(FE\d+)\b(?![A-Z])', 11, 'FE'),
+            (r'(?<![A-Z])\b(FV\d+)\b(?![A-Z])', 12, 'FV'),
+            
+            # PRIORIDAD 8: Nro. Doc. o Número Factura
+            (r'Nro\.?\s*Doc\.?[:\s]*([A-Z0-9]{1,5}[-\s]?\d+(?:[-\s]\d+)?)', 13, 'Nro. Doc.'),
+            
+            # PRIORIDAD 9: Patrón genérico (último recurso)
+            (r'\b([A-Z]{2,5}\d{4,})\b', 14, 'Genérico'),
         ]
         
         # Buscar con cada patrón y recolectar candidatos
@@ -866,9 +897,10 @@ class InvoiceExtractor:
                 ]
                 
                 # Palabras que indican que NO es una factura
+                # NOTA: "ORDEN" y "PEDIDO" removidos porque "ORDEN DE PEDIDO" es un campo estándar en facturas colombianas
                 palabras_clave_negativas = [
-                    'PEDIDO', 'ORDEN', 'REMISION', 'GUIA', 'COTIZACION',
-                    'PRESUPUESTO', 'PROFORMA', 'RECIBO', 'COMPROBANTE'
+                    'REMISION', 'GUIA', 'COTIZACION',
+                    'PRESUPUESTO', 'PROFORMA', 'RECIBO CAJA', 'COMPROBANTE EGRESO'
                 ]
                 
                 tiene_contexto_factura = any(palabra in contexto for palabra in palabras_clave_factura)
@@ -896,33 +928,55 @@ class InvoiceExtractor:
     
     def _extract_razon_social(self, text: str) -> Optional[str]:
         """
-        Extrae la razón social del proveedor
-        Generalmente está al inicio del documento o después de "Razón social"
+        Extrae la razón social del proveedor.
+        Generalmente está al inicio del documento o después de "Razón social".
         """
         lines = text.split('\n')
         
         # Buscar en las primeras líneas (el proveedor suele estar arriba)
-        for i, line in enumerate(lines[:15]):
-            line = line.strip()
+        for i, line in enumerate(lines[:25]):
+            line_original = line.strip()
+            line = line_original.upper()
             
-            # Buscar patrón "Razón social/Nombre: XXXX"
-            match = re.search(r'Raz[oó]n\s*social/?Nombre[:\s]*(.+)', line, re.IGNORECASE)
+            # Patrón 1: "RAZÓN SOCIAL: XXXX" — limpiar el prefijo
+            match = re.search(r'RAZ[OÓ]N\s*SOCIAL[:\s]+(.+)', line, re.IGNORECASE)
             if match:
-                return match.group(1).strip()
+                razon = match.group(1).strip()
+                # Limpiar prefijos adicionales
+                razon = re.sub(r'^(RAZÓN\s*SOCIAL[:\s]*)+', '', razon, flags=re.IGNORECASE).strip()
+                # Verificar que no sea el CUFE (código largo hexadecimal)
+                if len(razon) > 5 and not re.match(r'^[A-F0-9]{60,}$', razon):
+                    return razon
             
-            # Buscar línea que termine en S.A.S, LTDA, etc.
-            if re.search(r'\b(S\.?A\.?S\.?|LTDA\.?|S\.?A\.?)\s*$', line, re.IGNORECASE):
+            # Patrón 2: "NOMBRE COMERCIAL: XXXX"
+            match = re.search(r'NOMBRE\s*COMERCIAL[:\s]+(.+)', line, re.IGNORECASE)
+            if match:
+                nombre = match.group(1).strip()
+                if len(nombre) > 5 and not re.match(r'^[A-F0-9]{60,}$', nombre):
+                    return nombre
+            
+            # Patrón 3: Línea que termina en S.A.S, LTDA, E.S.P., BIC, etc.
+            if re.search(r'\b(S\.?A\.?S\.?|LTDA\.?|S\.?A\.?|E\.?S\.?P\.?|B\.?I\.?C\.?)\s*$', line, re.IGNORECASE):
                 # Verificar que no sea el cliente (CLINICA MEDILASER)
-                if 'MEDILASER' not in line.upper() and 'CLIENTE' not in line.upper():
-                    return line
+                if 'MEDILASER' not in line and 'CLIENTE' not in line and 'ADQUIRIENTE' not in line:
+                    # Limpiar prefijos comunes
+                    razon = re.sub(r'^(RAZÓN\s*SOCIAL[:\s]*|NOMBRE[:\s]*)+', '', line_original, flags=re.IGNORECASE).strip()
+                    # Verificar que no sea CUFE
+                    if not re.match(r'^[A-F0-9]{60,}$', razon.upper()):
+                        return razon
             
-            # Buscar nombre de empresa en mayúsculas al inicio
-            if i < 5 and len(line) > 10 and line.isupper():
+            # Patrón 4: Nombre de empresa en mayúsculas después de "DATOS DEL EMISOR"
+            if i >= 2 and len(line) > 10 and line.isupper():
                 # Verificar que parece un nombre de empresa
-                if not any(x in line for x in ['FACTURA', 'NIT', 'FECHA', 'DIREC', 'CLIENTE', 'SEÑOR']):
-                    # Podría ser el nombre del proveedor
+                if not any(x in line for x in ['FACTURA', 'NIT', 'FECHA', 'DIREC', 'CLIENTE', 'SEÑOR', 'DATOS', 'DOCUMENTO', 'CUFE', 'CÓDIGO']):
+                    # Verificar que tiene al menos 3 letras consecutivas
                     if re.search(r'[A-Z]{3,}', line):
-                        return line
+                        # Verificar que no es el CUFE (código hexadecimal largo)
+                        if not re.match(r'^[A-F0-9]{60,}$', line):
+                            # Limpiar prefijos
+                            razon = re.sub(r'^(RAZÓN\s*SOCIAL[:\s]*|NOMBRE[:\s]*)+', '', line_original, flags=re.IGNORECASE).strip()
+                            if len(razon) > 5 and 'MEDILASER' not in razon.upper():
+                                return razon
         
         return None
     

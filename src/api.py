@@ -6,6 +6,7 @@ from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, R
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
+import psycopg2.extras
 import tempfile
 import os
 import time
@@ -18,6 +19,13 @@ from .extractor import InvoiceExtractor
 from .learning import LearningSystem
 from .logger import ocr_logger
 from .proveedor_matcher import ProveedorMatcher
+from .proveedor_based_classifier import ProveedorBasedClassifier
+from .engine.knowledge_base import kb
+from .engine.fast_classifier import fast_classifier
+from .qdrant_classifier import get_qdrant_classifier
+from .llm_classifier import get_llm_classifier
+from .probabilistic_classifier import probabilistic_classifier
+from .multi_agent_classifier import multi_agent_classifier
 from .config import get_cors_origins, is_production, is_debug
 
 # Crear app
@@ -39,8 +47,8 @@ app.add_middleware(
 )
 
 # Inicializar sistemas
-# db_config ya no se pasa explícitamente, se usa el pool global
 classifier = PDFClassifier()
+proveedor_classifier = ProveedorBasedClassifier()
 extractor = InvoiceExtractor()
 learning_system = LearningSystem()
 proveedor_matcher = ProveedorMatcher()
@@ -55,6 +63,17 @@ async def startup_event():
     """Inicializar recursos al arrancar la app"""
     try:
         db.initialize()
+        # Cargar toda la configuración de clasificación en RAM
+        kb.initialize()
+        ocr_logger.logger.info(f"KnowledgeBase cargada: {kb.get_stats()}")
+        
+        # Entrenar clasificador probabilístico desde historial
+        try:
+            probabilistic_classifier.load_from_history(limit=10000)
+            ocr_logger.logger.info("Clasificador probabilístico entrenado")
+        except Exception as e:
+            ocr_logger.logger.warning(f"No se pudo entrenar clasificador probabilístico: {e}")
+        
         ocr_logger.logger.info("Sistema inicializado correctamente")
     except Exception as e:
         ocr_logger.logger.error(f"Error en inicio de sistema: {e}")
@@ -282,11 +301,46 @@ async def classify_invoice(
                 detail=f"No se pudo extraer texto de los archivos. Detalles: {error_detail}"
             )
         
-        # Clasificar
-        sucursal, unidad = classifier.classify(
-            data['text'],
-            xml_weight=data['xml_weight'],
-            pdf_weight=data['pdf_weight']
+        # ── Cascada de clasificación con Multi-Agente ─────────────────────────
+        # Sistema de agentes especializados que votan por la mejor clasificación:
+        # 1. RuleAgent: Reglas exactas (máxima prioridad)
+        # 2. ProviderAgent: Config específica del proveedor
+        # 3. BayesianAgent: Inferencia probabilística con historial
+        # 4. KeywordAgent: Scoring tradicional de keywords
+        # 5. FallbackAgent: Heurísticas de último recurso
+        # ─────────────────────────────────────────────────────────────────────
+        xml_data = {
+            'proveedor': data.get('proveedor', {}),
+            'factura': data.get('factura', {}),
+            'cliente': data.get('cliente', {}),
+        }
+        pdf_text = data.get('pdf_text', '') or data.get('text', '')
+        proveedor_nit = xml_data['proveedor'].get('nit', '') if isinstance(xml_data['proveedor'], dict) else ''
+        
+        # Obtener proveedor_id
+        proveedor_id = None
+        if proveedor_nit:
+            nit_limpio = ''.join(c for c in str(proveedor_nit) if c.isdigit())
+            prov = kb.get_proveedor_by_nit(nit_limpio)
+            if prov:
+                proveedor_id = prov['id']
+        
+        # Detectar sucursal primero (necesaria para filtrar unidades)
+        sucursal, _ = fast_classifier.classify(xml_data, pdf_text)
+        sucursal_id = sucursal.get('id') if sucursal.get('success') else None
+        
+        # Clasificar con sistema multi-agente
+        unidad, votos = multi_agent_classifier.classify(
+            xml_data, pdf_text, sucursal_id, proveedor_id
+        )
+        
+        clasificador_usado = unidad.get('method', 'multi_agent')
+        score_actual = unidad.get('confidence', 0) * 100
+
+        ocr_logger.logger.info(
+            f"Clasificación: sucursal={sucursal.get('nombre')} "
+            f"unidad={unidad.get('nombre')} confidence={unidad.get('confidence', 0):.2f} "
+            f"método={clasificador_usado}"
         )
         
         # Buscar y relacionar proveedor automáticamente
@@ -343,7 +397,8 @@ async def classify_invoice(
                 'xml_weight': data['xml_weight'],
                 'pdf_weight': data['pdf_weight'],
                 'has_xml': data['has_xml'],
-                'has_pdf': data['has_pdf']
+                'has_pdf': data['has_pdf'],
+                'clasificador': clasificador_usado
             }
         )
     
@@ -480,6 +535,69 @@ async def get_unidad_keywords(unidad_id: int):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/api/knowledge-base/stats")
+async def knowledge_base_stats():
+    """Estado de la base de conocimiento en RAM."""
+    return {"success": True, "stats": kb.get_stats()}
+
+
+@app.post("/api/knowledge-base/refresh")
+async def knowledge_base_refresh():
+    """Fuerza recarga de la KB desde BD (usar después de agregar keywords manualmente)."""
+    try:
+        kb.invalidate()
+        return {"success": True, "stats": kb.get_stats(), "message": "KnowledgeBase recargada"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/proveedor/{nit}/historial")
+async def get_proveedor_historial(nit: str, limit: int = 20):
+    """
+    Retorna el historial de clasificaciones de un proveedor por NIT.
+    Útil para diagnosticar por qué una factura se clasificó incorrectamente.
+    """
+    try:
+        import re as _re
+        nit_limpio = _re.sub(r'[^0-9]', '', nit)
+        with db.get_connection() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cursor:
+                cursor.execute("""
+                    SELECT
+                        h.id,
+                        h.factura_id,
+                        h.archivo_nombre,
+                        s_det.nombre  AS sucursal_detectada,
+                        uf_det.nombre AS unidad_detectada,
+                        s_cor.nombre  AS sucursal_correcta,
+                        uf_cor.nombre AS unidad_correcta,
+                        h.clasificacion_correcta,
+                        h.confianza_sucursal,
+                        h.confianza_unidad,
+                        h.fecha_validacion,
+                        h.created_at
+                    FROM ocr_clasificacion_historial h
+                    JOIN proveedores p ON p.id = h.proveedor_detectado_id
+                    LEFT JOIN sucursales s_det ON s_det.id = h.sucursal_detectada_id
+                    LEFT JOIN unidades_funcionales uf_det ON uf_det.id = h.unidad_funcional_detectada_id
+                    LEFT JOIN sucursales s_cor ON s_cor.id = h.sucursal_correcta_id
+                    LEFT JOIN unidades_funcionales uf_cor ON uf_cor.id = h.unidad_correcta_id
+                    WHERE REGEXP_REPLACE(p.nit, '[^0-9]', '', 'g') = %s
+                    ORDER BY h.created_at DESC
+                    LIMIT %s
+                """, (nit_limpio, limit))
+                rows = cursor.fetchall()
+
+        return {
+            "success": True,
+            "nit": nit,
+            "total": len(rows),
+            "historial": [dict(r) for r in rows]
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/api/logs")
 async def get_logs_summary():
     """
@@ -522,6 +640,159 @@ def _save_temp_file(upload_file: UploadFile, suffix: str) -> str:
         content = upload_file.file.read()
         tmp.write(content)
         return tmp.name
+
+
+def _get_unidades_activas(sucursal_id: Optional[int] = None) -> list:
+    """Retorna unidades funcionales activas, filtradas por sucursal si se indica."""
+    try:
+        with db.get_connection() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cursor:
+                if sucursal_id:
+                    cursor.execute("""
+                        SELECT id, nombre, codigo, sucursal_id
+                        FROM unidades_funcionales
+                        WHERE activo = TRUE AND sucursal_id = %s
+                        ORDER BY nombre
+                    """, (sucursal_id,))
+                else:
+                    cursor.execute("""
+                        SELECT id, nombre, codigo, sucursal_id
+                        FROM unidades_funcionales
+                        WHERE activo = TRUE
+                        ORDER BY nombre
+                    """)
+                return [dict(r) for r in cursor.fetchall()]
+    except Exception:
+        return []
+
+
+# ============================================
+# ENDPOINTS DE CLASIFICADOR PROBABILÍSTICO
+# ============================================
+
+@app.post("/api/probabilistic/retrain")
+async def retrain_probabilistic_classifier(limit: int = 10000):
+    """
+    Reentrena el clasificador probabilístico desde el historial.
+    
+    Args:
+        limit: Número máximo de registros a usar para entrenamiento
+    
+    Returns:
+        Estadísticas del entrenamiento
+    """
+    try:
+        probabilistic_classifier.load_from_history(limit=limit)
+        
+        stats = {
+            'total_samples': probabilistic_classifier.total_samples,
+            'unidades': len(probabilistic_classifier.priors),
+            'keywords_unicas': sum(len(v) for v in probabilistic_classifier.keyword_likelihoods.values()),
+            'proveedores': sum(len(v) for v in probabilistic_classifier.proveedor_likelihoods.values()),
+        }
+        
+        return {
+            "success": True,
+            "message": f"Clasificador reentrenado con {limit} registros",
+            "stats": stats
+        }
+    except Exception as e:
+        ocr_logger.logger.error(f"Error reentrenando clasificador: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/probabilistic/stats")
+async def get_probabilistic_stats():
+    """Estadísticas del clasificador probabilístico."""
+    if not probabilistic_classifier.loaded:
+        return {
+            "success": False,
+            "message": "Clasificador no entrenado",
+            "loaded": False
+        }
+    
+    return {
+        "success": True,
+        "loaded": True,
+        "total_samples": probabilistic_classifier.total_samples,
+        "unidades": len(probabilistic_classifier.priors),
+        "keywords_unicas": sum(len(v) for v in probabilistic_classifier.keyword_likelihoods.values()),
+        "proveedores_conocidos": sum(len(v) for v in probabilistic_classifier.proveedor_likelihoods.values()),
+        "ciudades_conocidas": sum(len(v) for v in probabilistic_classifier.ciudad_likelihoods.values()),
+        "proveedor_ciudad_pairs": sum(len(v) for v in probabilistic_classifier.proveedor_ciudad_likelihoods.values()),
+    }
+
+
+@app.get("/api/multi-agent/explain/{historial_id}")
+async def explain_classification(historial_id: int):
+    """
+    Explica cómo se clasificó una factura mostrando los votos de cada agente.
+    
+    Args:
+        historial_id: ID del registro en ocr_clasificacion_historial
+    
+    Returns:
+        Detalles de la clasificación con votos de agentes
+    """
+    try:
+        with db.get_connection() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cursor:
+                cursor.execute("""
+                    SELECT 
+                        h.*,
+                        p.nit as proveedor_nit,
+                        p.razon_social as proveedor_nombre,
+                        s_det.nombre as sucursal_detectada_nombre,
+                        uf_det.nombre as unidad_detectada_nombre,
+                        s_cor.nombre as sucursal_correcta_nombre,
+                        uf_cor.nombre as unidad_correcta_nombre
+                    FROM ocr_clasificacion_historial h
+                    LEFT JOIN proveedores p ON p.id = h.proveedor_detectado_id
+                    LEFT JOIN sucursales s_det ON s_det.id = h.sucursal_detectada_id
+                    LEFT JOIN unidades_funcionales uf_det ON uf_det.id = h.unidad_funcional_detectada_id
+                    LEFT JOIN sucursales s_cor ON s_cor.id = h.sucursal_correcta_id
+                    LEFT JOIN unidades_funcionales uf_cor ON uf_cor.id = h.unidad_correcta_id
+                    WHERE h.id = %s
+                """, (historial_id,))
+                
+                registro = cursor.fetchone()
+        
+        if not registro:
+            raise HTTPException(status_code=404, detail="Registro no encontrado")
+        
+        # Extraer datos para reclasificar
+        datos_extraidos = registro.get('datos_extraidos') or {}
+        xml_data = datos_extraidos.get('xml_data', {})
+        pdf_text = datos_extraidos.get('text', '')
+        
+        # Reclasificar con multi-agente para obtener votos
+        sucursal_id = registro['sucursal_detectada_id']
+        proveedor_id = registro['proveedor_detectado_id']
+        
+        resultado, votos = multi_agent_classifier.classify(
+            xml_data, pdf_text, sucursal_id, proveedor_id
+        )
+        
+        return {
+            "success": True,
+            "historial": dict(registro),
+            "reclasificacion": resultado,
+            "votos": [
+                {
+                    "agente": v.agent_name,
+                    "unidad_propuesta": v.unidad_nombre,
+                    "confidence": v.confidence,
+                    "razonamiento": v.reasoning,
+                    "metadata": v.metadata
+                }
+                for v in votos
+            ]
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        ocr_logger.logger.error(f"Error explicando clasificación: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ============================================

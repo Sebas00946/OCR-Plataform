@@ -219,88 +219,87 @@ class PDFClassifier:
     
     def _get_unidad_por_defecto(self, cursor, sucursal_id: int, text: str) -> Dict:
         """
-        Obtiene la unidad funcional por defecto para una sucursal
-        Prioriza: Administración > Almacén > Primera disponible
-        También intenta detectar el tipo de unidad por el contenido del texto
+        Obtiene la unidad funcional por defecto para una sucursal.
+        Prioriza por contenido del texto: ALMACEN para medicamentos/insumos,
+        ADMINISTRACION para servicios/gastos.
         """
-        # Obtener todas las unidades de la sucursal
         cursor.execute("""
             SELECT id, nombre, codigo
             FROM unidades_funcionales
             WHERE sucursal_id = %s AND activo = TRUE
             ORDER BY nombre
         """, (sucursal_id,))
-        
         unidades = cursor.fetchall()
-        
+
         if not unidades:
             return {'success': False, 'id': None, 'nombre': None, 'score': 0, 'keywords': [], 'sucursal_id': None}
-        
-        # Detectar tipo de unidad por contenido del texto
+
         text_upper = text.upper()
-        
-        # Palabras clave para detectar tipo de unidad
-        keywords_administracion = ['CONTRATO', 'SERVICIO', 'ADMINISTRATIVO', 'MANTENIMIENTO', 
-                                   'CONSTRUCCION', 'OBRA', 'PROYECTO', 'LECTURA', 'RADIOGRAFIA',
-                                   'TOMOGRAFIA', 'HONORARIOS', 'CONSULTORIA']
-        keywords_almacen = ['INSUMO', 'MEDICAMENTO', 'MATERIAL', 'EQUIPO', 'DISPOSITIVO',
-                           'PRODUCTO', 'SUMINISTRO', 'INVENTARIO', 'FARMACEUTICO']
-        keywords_activos = ['ACTIVO FIJO', 'MAQUINARIA', 'EQUIPO MEDICO', 'MOBILIARIO']
-        keywords_compras = ['CENTRAL DE COMPRAS', 'COMPRAS CENTRALIZADAS']
-        
-        # Contar coincidencias
-        score_admin = sum(1 for kw in keywords_administracion if kw in text_upper)
+
+        # Keywords de ALMACEN (medicamentos, insumos, dispositivos médicos)
+        keywords_almacen = [
+            'MEDICAMENTO', 'INSUMO', 'FARMACO', 'FARMACEUTICO', 'DROGUERIA',
+            'SUSPENSION', 'TABLETA', 'CAPSULA', 'AMPOLLA', 'JERINGA', 'CATETER',
+            'SUERO', 'SOLUCION', 'INYECTABLE', 'ORAL', 'TOPICO', 'CREMA', 'GEL',
+            'MATERIAL QUIRURGICO', 'MATERIAL DE CURACION', 'DISPOSITIVO MEDICO',
+            'EQUIPO MEDICO', 'INSTRUMENTAL', 'GUANTE', 'GASA', 'VENDA',
+            'SUMINISTRO', 'INVENTARIO', 'STOCK', 'ALMACEN',
+            # Nombres de medicamentos comunes
+            'OXCARBAZEPINA', 'IBUPROFENO', 'ACETAMINOFEN', 'AMOXICILINA',
+            'METFORMINA', 'LOSARTAN', 'ATORVASTATINA', 'OMEPRAZOL',
+        ]
+
+        # Keywords de ADMINISTRACION (servicios, gastos operativos)
+        keywords_administracion = [
+            'CONTRATO', 'SERVICIO', 'ADMINISTRATIVO', 'MANTENIMIENTO',
+            'CONSTRUCCION', 'OBRA', 'PROYECTO', 'LECTURA', 'RADIOGRAFIA',
+            'TOMOGRAFIA', 'HONORARIOS', 'CONSULTORIA', 'TELECOMUNICACION',
+            'INTERNET', 'TELEFONIA', 'ENERGIA', 'AGUA', 'GAS', 'ACUEDUCTO',
+            'VIGILANCIA', 'ASEO', 'LIMPIEZA', 'ARRENDAMIENTO', 'PAPELERIA',
+        ]
+
         score_almacen = sum(1 for kw in keywords_almacen if kw in text_upper)
-        score_activos = sum(1 for kw in keywords_activos if kw in text_upper)
-        score_compras = sum(1 for kw in keywords_compras if kw in text_upper)
-        
-        # Determinar tipo preferido
-        tipo_preferido = None
-        max_score = max(score_admin, score_almacen, score_activos, score_compras)
-        
-        if max_score > 0:
-            if score_admin == max_score:
-                tipo_preferido = 'ADMINISTRACI'
-            elif score_almacen == max_score:
-                tipo_preferido = 'ALMAC'
-            elif score_activos == max_score:
-                tipo_preferido = 'ACTIVO'
-            elif score_compras == max_score:
-                tipo_preferido = 'COMPRAS'
-        
-        # Buscar unidad del tipo preferido
+        score_admin = sum(1 for kw in keywords_administracion if kw in text_upper)
+
+        # Determinar tipo preferido con ALMACEN como prioridad cuando hay empate
+        # (los proveedores de medicamentos son más frecuentes y específicos)
+        if score_almacen >= score_admin and score_almacen > 0:
+            tipo_preferido = 'ALMAC'
+            keywords_detectadas = [kw for kw in keywords_almacen if kw in text_upper][:3]
+        elif score_admin > score_almacen:
+            tipo_preferido = 'ADMINISTRACI'
+            keywords_detectadas = [kw for kw in keywords_administracion if kw in text_upper][:3]
+        else:
+            tipo_preferido = None
+            keywords_detectadas = []
+
         unidad_seleccionada = None
-        keywords_detectadas = []
-        
+
         if tipo_preferido:
             for uf in unidades:
                 if tipo_preferido in uf['nombre'].upper():
                     unidad_seleccionada = uf
-                    if tipo_preferido == 'ADMINISTRACI':
-                        keywords_detectadas = [kw for kw in keywords_administracion if kw in text_upper][:3]
-                    elif tipo_preferido == 'ALMAC':
-                        keywords_detectadas = [kw for kw in keywords_almacen if kw in text_upper][:3]
                     break
-        
-        # Si no encontramos el tipo preferido, usar Administración por defecto
+
+        # Fallback: ADMINISTRACION (más genérica)
         if not unidad_seleccionada:
             for uf in unidades:
                 if 'ADMINISTRACI' in uf['nombre'].upper():
                     unidad_seleccionada = uf
                     keywords_detectadas = ['[ASIGNADO POR DEFECTO]']
                     break
-        
-        # Si no hay Administración, usar la primera unidad
+
         if not unidad_seleccionada:
             unidad_seleccionada = unidades[0]
             keywords_detectadas = ['[ASIGNADO POR DEFECTO]']
-        
+
+        max_score = max(score_almacen, score_admin)
         return {
             'success': True,
             'id': unidad_seleccionada['id'],
             'nombre': unidad_seleccionada['nombre'],
             'codigo': unidad_seleccionada['codigo'],
-            'score': max_score * 5 if max_score > 0 else 1,  # Score basado en detección
+            'score': max_score * 5 if max_score > 0 else 1,
             'keywords': keywords_detectadas,
             'sucursal_id': sucursal_id
         }
