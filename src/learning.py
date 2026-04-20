@@ -140,6 +140,24 @@ class LearningSystem:
                     conn.commit()
                     learning_actions['weights_adjusted'] = len(keywords_reforzadas) > 0
                     learning_actions['message'] = f"Reforzadas {len(keywords_reforzadas)} keywords"
+                    
+                    # Auto-crear regla si hay consistencia
+                    cursor.execute("""
+                        SELECT proveedor_detectado_id, unidad_funcional_detectada_id, sucursal_detectada_id
+                        FROM ocr_clasificacion_historial WHERE id = %s
+                    """, (historial_id,))
+                    hist = cursor.fetchone()
+                    if hist and hist.get('proveedor_detectado_id') and hist.get('unidad_funcional_detectada_id'):
+                        regla_creada = self._auto_crear_regla_si_consistente(
+                            cursor, hist['proveedor_detectado_id'],
+                            hist['unidad_funcional_detectada_id'],
+                            hist['sucursal_detectada_id']
+                        )
+                        if regla_creada:
+                            conn.commit()
+                            learning_actions['regla_auto_creada'] = True
+                            learning_actions['message'] += " | Regla automatica creada"
+                    
                 elif auto_add_keywords:
                     result = self._learn_from_correction(
                         cursor, historial_id, sucursal_correcta_id, unidad_correcta_id
@@ -153,6 +171,30 @@ class LearningSystem:
                         f"Aprendidas {len(result.get('nuevas', []))} keywords nuevas, "
                         f"penalizadas {len(result.get('penalizadas', []))}"
                     )
+                    
+                    # Auto-crear regla si hay consistencia en correcciones
+                    if unidad_correcta_id:
+                        cursor.execute("""
+                            SELECT proveedor_detectado_id, sucursal_detectada_id
+                            FROM ocr_clasificacion_historial WHERE id = %s
+                        """, (historial_id,))
+                        hist = cursor.fetchone()
+                        if hist and hist.get('proveedor_detectado_id'):
+                            regla_creada = self._auto_crear_regla_si_consistente(
+                                cursor, hist['proveedor_detectado_id'],
+                                unidad_correcta_id,
+                                sucursal_correcta_id or hist.get('sucursal_detectada_id')
+                            )
+                            if regla_creada:
+                                conn.commit()
+                                learning_actions['regla_auto_creada'] = True
+                                learning_actions['message'] += " | Regla automatica creada"
+                
+                # Verificar si es momento de reentrenar el clasificador bayesiano
+                total_validaciones = self._contar_validaciones_totales(cursor)
+                if total_validaciones > 0 and total_validaciones % 50 == 0:
+                    learning_actions['reentrenamiento_sugerido'] = True
+                    learning_actions['total_validaciones'] = total_validaciones
 
                 return learning_actions
             finally:
@@ -468,3 +510,85 @@ class LearningSystem:
         except Exception as e:
             logger.warning(f"No se pudo registrar relación proveedor-unidad: {e}")
             return False
+
+    def _auto_crear_regla_si_consistente(self, cursor, proveedor_id: int, unidad_id: int, sucursal_id: Optional[int]) -> bool:
+        """
+        Si el mismo proveedor ha sido corregido/validado 3+ veces a la misma unidad,
+        crea una regla automática en ocr_reglas_clasificacion.
+        """
+        try:
+            # Buscar NIT del proveedor
+            cursor.execute("SELECT nit FROM proveedores WHERE id = %s", (proveedor_id,))
+            prov = cursor.fetchone()
+            if not prov:
+                return False
+            nit = prov['nit']
+            
+            # Contar cuántas veces este proveedor fue clasificado/corregido a esta unidad
+            cursor.execute("""
+                SELECT COUNT(*) as total
+                FROM ocr_clasificacion_historial
+                WHERE proveedor_detectado_id = %s
+                  AND clasificacion_correcta IS NOT NULL
+                  AND (
+                    (clasificacion_correcta = true AND unidad_funcional_detectada_id = %s)
+                    OR
+                    (clasificacion_correcta = false AND unidad_correcta_id = %s)
+                  )
+            """, (proveedor_id, unidad_id, unidad_id))
+            result = cursor.fetchone()
+            total = result['total'] if result else 0
+            
+            if total < 3:
+                return False
+            
+            # Verificar que no exista ya una regla simple para este NIT+unidad
+            cursor.execute("""
+                SELECT id FROM ocr_reglas_clasificacion
+                WHERE condicion->>'nit' = %s
+                  AND (accion->>'unidad_funcional_id')::int = %s
+                  AND activo = true
+            """, (str(nit), unidad_id))
+            if cursor.fetchone():
+                return False  # Ya existe
+            
+            # Obtener nombre de la unidad
+            cursor.execute("SELECT nombre FROM unidades_funcionales WHERE id = %s", (unidad_id,))
+            unidad = cursor.fetchone()
+            nombre_unidad = unidad['nombre'] if unidad else f'unidad_{unidad_id}'
+            
+            # Crear regla automática
+            condicion = json.dumps({"nit": str(nit)})
+            accion = json.dumps({
+                "unidad_funcional_id": unidad_id,
+                "sucursal_id": sucursal_id,
+                "nombre": nombre_unidad
+            })
+            
+            cursor.execute("""
+                INSERT INTO ocr_reglas_clasificacion (condicion, accion, prioridad, activo)
+                VALUES (%s::jsonb, %s::jsonb, 100, true)
+            """, (condicion, accion))
+            
+            logger.info(
+                f"Regla auto-creada: NIT {nit} -> {nombre_unidad} "
+                f"(basado en {total} validaciones consistentes)"
+            )
+            return True
+            
+        except Exception as e:
+            logger.warning(f"No se pudo auto-crear regla: {e}")
+            return False
+
+    def _contar_validaciones_totales(self, cursor) -> int:
+        """Cuenta el total de validaciones para decidir si reentrenar"""
+        try:
+            cursor.execute("""
+                SELECT COUNT(*) as total
+                FROM ocr_clasificacion_historial
+                WHERE clasificacion_correcta IS NOT NULL
+            """)
+            result = cursor.fetchone()
+            return result['total'] if result else 0
+        except Exception:
+            return 0

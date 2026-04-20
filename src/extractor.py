@@ -235,15 +235,35 @@ class InvoiceExtractor:
             if orden_compra:
                 structured_data['factura']['orden_compra'] = orden_compra.strip()
             
-            # Note (puede contener información importante como código de sucursal)
-            note = self._extract_text(invoice_root, [
-                './/cbc:Note',
-            ])
-            if note:
-                structured_data['factura']['note'] = note.strip()
-                structured_data['factura']['notas'] = note.strip()  # Alias
-                # Agregar al texto para búsqueda
-                parts.append(note)
+            # Notes (pueden contener información importante como código de sucursal, almacén)
+            # Farmaquirurgicos por ejemplo pone:
+            #   <cbc:Note>Sucursal: MEDILASER FLORENCIA</cbc:Note>
+            #   <cbc:Note>Almacén: 0055 - FLO MED</cbc:Note>
+            all_notes = self._extract_all_text(invoice_root, ['.//cbc:Note'])
+            if all_notes:
+                # Guardar todas las notas concatenadas
+                notas_completas = ' | '.join(all_notes)
+                structured_data['factura']['note'] = notas_completas
+                structured_data['factura']['notas'] = notas_completas
+                structured_data['factura']['notas_lista'] = all_notes
+                
+                # Extraer datos específicos de las notas
+                for nota in all_notes:
+                    nota_strip = nota.strip()
+                    nota_upper = nota_strip.upper()
+                    
+                    # Detectar "Sucursal: MEDILASER FLORENCIA"
+                    if nota_upper.startswith('SUCURSAL:') or nota_upper.startswith('SUCURSAL :'):
+                        sucursal_nota = nota_strip.split(':', 1)[1].strip()
+                        structured_data['factura']['sucursal_nota'] = sucursal_nota
+                    
+                    # Detectar "Almacén: 0055 - FLO MED" o "Almacen: ..."
+                    elif 'ALMAC' in nota_upper and ':' in nota_strip:
+                        almacen_nota = nota_strip.split(':', 1)[1].strip()
+                        structured_data['factura']['almacen_nota'] = almacen_nota
+                    
+                    # Agregar al texto para búsqueda de keywords
+                    parts.append(nota_strip)
             
             # ============================================
             # VALORES MONETARIOS

@@ -42,6 +42,15 @@ _KW_ADMIN: List[str] = [
 _NOTE_CODIGO_MAP: Dict[str, str] = {
     'NVA': 'NVA', 'TJA': 'TJA', 'FLA': 'FLA', 'PTO': 'PTO',
     'BOG': 'BOG', 'FAC': 'FAC', 'DUI': 'DUI', 'KTA': 'KTA',
+    'EAL': 'EAL', 'DTA': 'DTA', 'MOC': 'MOC', 'CMI': 'CMI',
+    # Variantes comunes en notas de proveedores
+    'NEIVA': 'NVA', 'TUNJA': 'TJA', 'FLORENCIA': 'FLA',
+    'PITALITO': 'PTO', 'BOGOTA': 'BOG', 'FACATATIVA': 'KTA',
+    'DUITAMA': 'DTA', 'MOCOA': 'MOC', 'CAJICA': 'EAL',
+    # Códigos de almacén de Farmaquirurgicos
+    'NVA MED': 'NVA', 'TJA MED': 'TJA', 'FLO MED': 'FLA',
+    'PTO MED': 'PTO', 'KTA MED': 'KTA', 'EAL MED': 'EAL',
+    'DTA MED': 'DTA', 'CMI MED': 'CMI',
 }
 
 
@@ -71,19 +80,40 @@ class FastClassifier:
         nit = ''.join(c for c in str(proveedor.get('nit', '')) if c.isdigit())
         note = factura.get('note', '') or factura.get('notas', '') or ''
         ciudad = (cliente.get('ciudad', '') or '').upper().strip()
+        
+        # Notas específicas del XML (Sucursal/Almacén de proveedores como Farmaquirurgicos)
+        sucursal_nota = factura.get('sucursal_nota', '') or ''
+        almacen_nota = factura.get('almacen_nota', '') or ''
 
-        # Texto combinado para scoring
+        # Texto combinado para scoring — incluir notas del XML
         texto = pdf_text or ''
+        if sucursal_nota:
+            texto = f"{sucursal_nota} {texto}"
+        if almacen_nota:
+            texto = f"{almacen_nota} {texto}"
 
         # ── Paso 1: Identificar sucursal ──────────────────────────────────
-        sucursal = self._detectar_sucursal(note, ciudad, texto)
+        # Pasar también las notas específicas para mejor detección
+        note_completo = note
+        if sucursal_nota:
+            note_completo = f"{note_completo} | {sucursal_nota}"
+        if almacen_nota:
+            note_completo = f"{note_completo} | {almacen_nota}"
+        sucursal = self._detectar_sucursal(note_completo, ciudad, texto)
 
         # ── Paso 2: Regla exacta por NIT ─────────────────────────────────
         if nit:
-            regla = self._aplicar_regla_nit(nit, sucursal)
+            regla = self._aplicar_regla_nit(nit, sucursal, texto)
             if regla:
+                # Si la regla define sucursal_id, usar esa sucursal
+                regla_sucursal_id = regla.get('sucursal_id')
+                if regla_sucursal_id and regla_sucursal_id != sucursal.get('id'):
+                    suc_data = kb.get_sucursal(regla_sucursal_id)
+                    if suc_data:
+                        sucursal = self._sucursal_ok(suc_data, 'regla_nit', 1.0)
+                
                 ms = (time.monotonic() - t0) * 1000
-                logger.debug(f"FastClassifier: regla NIT en {ms:.1f}ms → {regla.get('nombre')}")
+                logger.debug(f"FastClassifier: regla NIT en {ms:.1f}ms -> {regla.get('nombre')}")
                 return sucursal, regla
 
         # ── Paso 3: Config de proveedor ───────────────────────────────────
@@ -174,33 +204,95 @@ class FastClassifier:
     # REGLAS EXACTAS
     # ─────────────────────────────────────────────────────────────────────────
 
-    def _aplicar_regla_nit(self, nit: str, sucursal: Dict) -> Optional[Dict]:
+    def _aplicar_regla_nit(self, nit: str, sucursal: Dict, texto: str = '') -> Optional[Dict]:
         """
         Aplica reglas de ocr_reglas_clasificacion.
         Las reglas tienen máxima prioridad — son configuradas manualmente.
-        La condicion es JSONB: {"nit": "900433437"} o {"nit": "...", "ciudad": "NEIVA"}
+        
+        Soporta dos tipos de condición:
+        - Simple: {"nit": "900433437"} → aplica siempre para ese NIT
+        - Con keyword: {"nit": "900433437", "sucursal_keyword": "FLORENCIA"} → aplica si keyword está en texto
+        - Fallback: {"nit": "900433437"} + accion.es_fallback → aplica si ninguna keyword matcheó
         """
-        sucursal_id = sucursal.get('id')
-        for regla in kb.get_reglas(sucursal_id):
+        # Obtener TODAS las reglas (sin filtrar por sucursal, porque la regla define la sucursal)
+        todas_reglas = kb.get_reglas()
+        
+        # Filtrar reglas de este NIT
+        reglas_nit = []
+        for regla in todas_reglas:
             condicion = regla.get('condicion') or {}
-            # condicion puede venir como dict (psycopg2 lo deserializa) o string
             if isinstance(condicion, str):
                 import json
                 try:
                     condicion = json.loads(condicion)
                 except Exception:
                     condicion = {}
-
+            
             nit_regla = ''.join(c for c in str(condicion.get('nit', '')) if c.isdigit())
-            if not nit_regla or nit_regla != nit:
+            if nit_regla and nit_regla == nit:
+                reglas_nit.append({**regla, '_condicion': condicion})
+        
+        if not reglas_nit:
+            return None
+        
+        texto_upper = texto.upper() if texto else ''
+        
+        # PASO 1: Buscar reglas con sucursal_keyword (prioridad alta)
+        for regla in reglas_nit:
+            condicion = regla['_condicion']
+            keyword = condicion.get('sucursal_keyword', '').strip()
+            
+            if not keyword:
+                continue  # Es regla sin keyword (fallback), se evalúa después
+            
+            if keyword.upper() in texto_upper:
+                unidad_id = regla.get('unidad_funcional_id')
+                if not unidad_id:
+                    continue
+                
+                unidad = kb.get_unidad(unidad_id)
+                if unidad:
+                    logger.info(
+                        f"Regla NIT+keyword: NIT={nit} keyword='{keyword}' → {unidad['nombre']} "
+                        f"(regla_id={regla.get('id')}, prioridad={regla.get('prioridad')})"
+                    )
+                    return {
+                        'success': True,
+                        'id': unidad['id'],
+                        'nombre': unidad['nombre'],
+                        'codigo': unidad['codigo'],
+                        'sucursal_id': unidad['sucursal_id'],
+                        'score': regla.get('prioridad', 150) * 10,
+                        'confidence': 1.0,
+                        'method': 'regla_nit_keyword',
+                        'keywords': [f"regla_id={regla.get('id')}", f"keyword={keyword}"]
+                    }
+        
+        # PASO 2: Buscar reglas simples (sin keyword, sin fallback)
+        for regla in reglas_nit:
+            condicion = regla['_condicion']
+            accion = regla.get('accion') or {}
+            if isinstance(accion, str):
+                import json
+                try:
+                    accion = json.loads(accion)
+                except Exception:
+                    accion = {}
+            
+            # Saltar si tiene keyword (ya se evaluó arriba)
+            if condicion.get('sucursal_keyword'):
                 continue
-
+            # Saltar si es fallback explícito
+            if accion.get('es_fallback'):
+                continue
+            
             unidad_id = regla.get('unidad_funcional_id')
             if not unidad_id:
                 continue
-
+            
             unidad = kb.get_unidad(unidad_id)
             if unidad:
+                logger.info(f"Regla NIT simple: NIT={nit} → {unidad['nombre']} (regla_id={regla.get('id')})")
                 return {
                     'success': True,
                     'id': unidad['id'],
@@ -212,6 +304,41 @@ class FastClassifier:
                     'method': 'regla_exacta',
                     'keywords': [f"regla_id={regla.get('id')}"]
                 }
+        
+        # PASO 3: Fallback (prioridad baja, solo si nada más matcheó)
+        for regla in reglas_nit:
+            condicion = regla['_condicion']
+            accion = regla.get('accion') or {}
+            if isinstance(accion, str):
+                import json
+                try:
+                    accion = json.loads(accion)
+                except Exception:
+                    accion = {}
+            
+            if not accion.get('es_fallback') and condicion.get('sucursal_keyword'):
+                continue
+            
+            if accion.get('es_fallback'):
+                unidad_id = regla.get('unidad_funcional_id')
+                if not unidad_id:
+                    continue
+                
+                unidad = kb.get_unidad(unidad_id)
+                if unidad:
+                    logger.info(f"Regla NIT fallback: NIT={nit} → {unidad['nombre']} (regla_id={regla.get('id')})")
+                    return {
+                        'success': True,
+                        'id': unidad['id'],
+                        'nombre': unidad['nombre'],
+                        'codigo': unidad['codigo'],
+                        'sucursal_id': unidad['sucursal_id'],
+                        'score': regla.get('prioridad', 50) * 10,
+                        'confidence': 0.7,
+                        'method': 'regla_nit_fallback',
+                        'keywords': [f"regla_id={regla.get('id')}", "fallback"]
+                    }
+        
         return None
 
     # ─────────────────────────────────────────────────────────────────────────

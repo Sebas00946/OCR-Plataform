@@ -75,9 +75,13 @@ class RuleAgent(BaseAgent):
             if not nit:
                 return None
 
-            # Buscar regla exacta — condicion es JSONB: {"nit": "900433437"}
             import json as _json
-            reglas = kb.get_reglas(sucursal_id)
+            
+            # Obtener TODAS las reglas (sin filtrar por sucursal)
+            reglas = kb.get_reglas()
+            
+            # Filtrar reglas de este NIT
+            reglas_nit = []
             for regla in reglas:
                 condicion = regla.get('condicion') or {}
                 if isinstance(condicion, str):
@@ -85,15 +89,57 @@ class RuleAgent(BaseAgent):
                         condicion = _json.loads(condicion)
                     except Exception:
                         condicion = {}
-
+                
                 nit_regla = ''.join(c for c in str(condicion.get('nit', '')) if c.isdigit())
-                if not nit_regla or nit_regla != nit:
+                if nit_regla and nit_regla == nit:
+                    reglas_nit.append({**regla, '_condicion': condicion})
+            
+            if not reglas_nit:
+                return None
+            
+            texto_upper = (pdf_text or '').upper()
+            
+            # Buscar reglas con sucursal_keyword primero
+            for regla in reglas_nit:
+                condicion = regla['_condicion']
+                keyword = condicion.get('sucursal_keyword', '').strip()
+                
+                if not keyword:
                     continue
-
+                
+                if keyword.upper() in texto_upper:
+                    unidad_id = regla.get('unidad_funcional_id')
+                    if not unidad_id:
+                        continue
+                    unidad = kb.get_unidad(unidad_id)
+                    if unidad:
+                        return AgentVote(
+                            agent_name=self.name,
+                            unidad_id=unidad['id'],
+                            unidad_nombre=unidad['nombre'],
+                            confidence=1.0,
+                            reasoning=f"Regla NIT+keyword: NIT={nit} keyword='{keyword}' (regla_id={regla.get('id')})",
+                            metadata={'regla_id': regla.get('id'), 'keyword': keyword}
+                        )
+            
+            # Reglas simples (sin keyword, sin fallback)
+            for regla in reglas_nit:
+                condicion = regla['_condicion']
+                accion = regla.get('accion') or {}
+                if isinstance(accion, str):
+                    try:
+                        accion = _json.loads(accion)
+                    except Exception:
+                        accion = {}
+                
+                if condicion.get('sucursal_keyword'):
+                    continue
+                if accion.get('es_fallback'):
+                    continue
+                
                 unidad_id = regla.get('unidad_funcional_id')
                 if not unidad_id:
                     continue
-
                 unidad = kb.get_unidad(unidad_id)
                 if unidad:
                     return AgentVote(
@@ -104,6 +150,31 @@ class RuleAgent(BaseAgent):
                         reasoning=f"Regla exacta ID {regla.get('id')} para NIT {nit}",
                         metadata={'regla_id': regla.get('id')}
                     )
+            
+            # Fallback
+            for regla in reglas_nit:
+                accion = regla.get('accion') or {}
+                if isinstance(accion, str):
+                    try:
+                        accion = _json.loads(accion)
+                    except Exception:
+                        accion = {}
+                
+                if accion.get('es_fallback'):
+                    unidad_id = regla.get('unidad_funcional_id')
+                    if not unidad_id:
+                        continue
+                    unidad = kb.get_unidad(unidad_id)
+                    if unidad:
+                        return AgentVote(
+                            agent_name=self.name,
+                            unidad_id=unidad['id'],
+                            unidad_nombre=unidad['nombre'],
+                            confidence=0.7,
+                            reasoning=f"Regla NIT fallback: NIT={nit} (regla_id={regla.get('id')})",
+                            metadata={'regla_id': regla.get('id'), 'fallback': True}
+                        )
+            
             return None
 
 
