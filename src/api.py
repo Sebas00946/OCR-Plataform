@@ -20,6 +20,7 @@ from .learning import LearningSystem
 from .logger import ocr_logger
 from .proveedor_matcher import ProveedorMatcher
 from .proveedor_based_classifier import ProveedorBasedClassifier
+from .comprobante_egreso_extractor import ComprobanteEgresoExtractor
 from .engine.knowledge_base import kb
 from .engine.fast_classifier import fast_classifier
 from .qdrant_classifier import get_qdrant_classifier
@@ -52,6 +53,7 @@ proveedor_classifier = ProveedorBasedClassifier()
 extractor = InvoiceExtractor()
 learning_system = LearningSystem()
 proveedor_matcher = ProveedorMatcher()
+comprobante_extractor = ComprobanteEgresoExtractor()
 
 
 # ============================================
@@ -628,6 +630,122 @@ async def get_logs_summary():
             traceback_info=traceback.format_exc()
         )
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================
+# COMPROBANTE DE EGRESO
+# ============================================
+
+from typing import List as TypingList
+
+@app.post("/api/comprobante-egreso")
+async def extract_comprobante_egreso(
+    pdf_file: UploadFile = File(...),
+):
+    """
+    Extrae datos de un comprobante de egreso en PDF.
+
+    Campos extraídos:
+    - consecutivo, fecha, estado, valor
+    - beneficiario_nit, beneficiario_nombre
+    - banco, detalle, planilla
+    - facturas afectadas
+    - movimientos contables
+
+    Args:
+        pdf_file: Archivo PDF del comprobante de egreso
+
+    Returns:
+        JSON con los datos extraídos
+    """
+    pdf_path = None
+
+    try:
+        # Validar archivo
+        if not pdf_file.filename.lower().endswith('.pdf'):
+            raise HTTPException(status_code=400, detail="El archivo debe ser un PDF")
+
+        pdf_file.file.seek(0, 2)
+        pdf_size = pdf_file.file.tell()
+        pdf_file.file.seek(0)
+
+        if pdf_size == 0:
+            raise HTTPException(status_code=400, detail="El archivo PDF está vacío")
+
+        # Guardar temporal
+        pdf_path = _save_temp_file(pdf_file, ".pdf")
+
+        # Extraer datos
+        resultado = comprobante_extractor.extract(pdf_path)
+
+        if not resultado.get('success'):
+            raise HTTPException(
+                status_code=422,
+                detail=f"No se pudieron extraer datos del comprobante: {resultado.get('error', 'Error desconocido')}"
+            )
+
+        return resultado
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        ocr_logger.log_error(
+            endpoint="/api/comprobante-egreso",
+            error_message=str(e),
+            error_type=type(e).__name__,
+            traceback_info=traceback.format_exc()
+        )
+        raise HTTPException(status_code=500, detail=f"Error interno: {str(e)}")
+    finally:
+        if pdf_path and os.path.exists(pdf_path):
+            os.unlink(pdf_path)
+
+
+@app.post("/api/comprobantes-egreso/batch")
+async def extract_comprobantes_egreso_batch(
+    pdf_files: TypingList[UploadFile] = File(...),
+):
+    """
+    Extrae datos de múltiples comprobantes de egreso en PDF.
+
+    Args:
+        pdf_files: Lista de archivos PDF
+
+    Returns:
+        JSON con resumen y lista de comprobantes extraídos
+    """
+    pdf_paths = []
+
+    try:
+        # Guardar todos los archivos temporalmente
+        for pdf_file in pdf_files:
+            if not pdf_file.filename.lower().endswith('.pdf'):
+                continue
+            path = _save_temp_file(pdf_file, ".pdf")
+            pdf_paths.append(path)
+
+        if not pdf_paths:
+            raise HTTPException(status_code=400, detail="No se proporcionaron archivos PDF válidos")
+
+        # Extraer datos de todos
+        resultado = comprobante_extractor.extract_multiple(pdf_paths)
+
+        return resultado
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        ocr_logger.log_error(
+            endpoint="/api/comprobantes-egreso/batch",
+            error_message=str(e),
+            error_type=type(e).__name__,
+            traceback_info=traceback.format_exc()
+        )
+        raise HTTPException(status_code=500, detail=f"Error interno: {str(e)}")
+    finally:
+        for path in pdf_paths:
+            if os.path.exists(path):
+                os.unlink(path)
 
 
 # ============================================
