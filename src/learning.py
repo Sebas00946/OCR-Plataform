@@ -63,7 +63,8 @@ class LearningSystem:
         unidad: Dict,
         metadata: Dict,
         proveedor_id: Optional[int] = None,
-        confianza_proveedor: Optional[float] = None
+        confianza_proveedor: Optional[float] = None,
+        empresa_id: int = 1
     ) -> int:
         """Guarda una clasificación en el historial"""
         with db.get_connection() as conn:
@@ -75,8 +76,8 @@ class LearningSystem:
                         sucursal_detectada_id, unidad_funcional_detectada_id,
                         proveedor_detectado_id, confianza_sucursal, confianza_unidad,
                         confianza_proveedor, keywords_encontradas, datos_extraidos,
-                        tiempo_procesamiento_ms
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s)
+                        tiempo_procesamiento_ms, empresa_id
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s)
                     RETURNING id
                 """, (
                     factura_id,
@@ -95,7 +96,8 @@ class LearningSystem:
                         'texto_completo': metadata.get('text', '')[:2000] if metadata else ''
                     }),
                     json.dumps(metadata),
-                    0
+                    0,
+                    empresa_id
                 ))
                 historial_id = cursor.fetchone()[0]
                 conn.commit()
@@ -110,7 +112,8 @@ class LearningSystem:
         sucursal_correcta_id: Optional[int] = None,
         unidad_correcta_id: Optional[int] = None,
         observaciones: Optional[str] = None,
-        auto_add_keywords: bool = True
+        auto_add_keywords: bool = True,
+        empresa_id: int = 1
     ) -> Dict:
         """Valida una clasificación y aprende de ella"""
         with db.get_connection() as conn:
