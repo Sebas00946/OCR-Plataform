@@ -88,6 +88,11 @@ class InvoiceExtractor:
                 # Si no hay embebido, usar el root actual
                 invoice_root = root
             
+            # ============================================
+            # DETECTAR TIPO DE DOCUMENTO
+            # ============================================
+            tipo_documento = self._detectar_tipo_documento(root, invoice_root)
+            
             parts = []
             quality_score = 0
             max_quality = 8  # Número de campos importantes
@@ -96,7 +101,8 @@ class InvoiceExtractor:
             structured_data = {
                 'proveedor': {},
                 'factura': {},
-                'cliente': {}
+                'cliente': {},
+                'tipo_documento': tipo_documento  # Invoice, CreditNote, DebitNote
             }
             
             # ============================================
@@ -1245,7 +1251,8 @@ class InvoiceExtractor:
         merged = {}
         
         # Campos simples
-        fields = ['numero', 'fecha', 'cufe', 'orden_compra']
+        fields = ['numero', 'fecha', 'cufe', 'orden_compra', 'tipo_documento',
+                  'note', 'notas', 'notas_lista', 'sucursal_nota', 'almacen_nota']
         
         for field in fields:
             if xml_data.get(field):
@@ -1322,6 +1329,52 @@ class InvoiceExtractor:
                     texts.append(elem.text.strip())
         return texts
     
+    def _detectar_tipo_documento(self, root, invoice_root) -> str:
+        """
+        Detecta el tipo de documento electrónico colombiano.
+        
+        Returns:
+            'Invoice'     - Factura electrónica (procesar normalmente)
+            'CreditNote'  - Nota Crédito (rechazar)
+            'DebitNote'   - Nota Débito (rechazar)
+            'Unknown'     - Tipo desconocido
+        """
+        # 1. Detectar por el tag raíz del XML embebido o del documento
+        for node in [invoice_root, root]:
+            tag = node.tag if node is not None else ''
+            tag_local = tag.split('}')[-1] if '}' in tag else tag
+            
+            if 'CreditNote' in tag_local:
+                return 'CreditNote'
+            elif 'DebitNote' in tag_local:
+                return 'DebitNote'
+            elif 'Invoice' in tag_local:
+                return 'Invoice'
+        
+        # 2. Detectar por InvoiceTypeCode en el XML
+        type_code = self._extract_text(invoice_root, ['.//cbc:InvoiceTypeCode'])
+        if type_code:
+            code = type_code.strip()
+            # Códigos DIAN: 01=Factura, 91=Nota Crédito, 92=Nota Débito
+            if code in ('91', '92'):
+                return 'CreditNote' if code == '91' else 'DebitNote'
+            elif code == '01':
+                return 'Invoice'
+        
+        # 3. Detectar por el contenido del XML serializado
+        try:
+            xml_str = ET.tostring(root, encoding='unicode').upper()
+            if '<CREDITNOTE' in xml_str or 'CREDITNOTE>' in xml_str:
+                return 'CreditNote'
+            elif '<DEBITNOTE' in xml_str or 'DEBITNOTE>' in xml_str:
+                return 'DebitNote'
+            elif '<INVOICE' in xml_str:
+                return 'Invoice'
+        except Exception:
+            pass
+        
+        return 'Unknown'
+
     def _extract_embedded_invoice(self, root):
         """
         Extrae el Invoice embebido en el CDATA del AttachedDocument

@@ -303,6 +303,37 @@ async def classify_invoice(
                 detail=f"No se pudo extraer texto de los archivos. Detalles: {error_detail}"
             )
         
+        # ── Validar tipo de documento — rechazar Notas Crédito y Débito ───────
+        tipo_documento = data.get('factura', {}).get('tipo_documento', 'Unknown')
+        if tipo_documento in ('CreditNote', 'DebitNote'):
+            tipo_label = 'Nota Crédito' if tipo_documento == 'CreditNote' else 'Nota Débito'
+            numero = data.get('factura', {}).get('numero', '')
+            ocr_logger.logger.info(
+                f"Documento rechazado: {tipo_label} {numero} — no se procesa en el sistema"
+            )
+            return ClassificationResponse(
+                success=False,
+                sucursal=None,
+                unidad_funcional=None,
+                proveedor=data.get('proveedor', {}),
+                proveedor_match=None,
+                factura=data.get('factura', {}),
+                cliente=data.get('cliente', {}),
+                historial_id=None,
+                metadata={
+                    'xml_quality': data.get('xml_quality', 0),
+                    'xml_weight': data.get('xml_weight', 0),
+                    'pdf_weight': data.get('pdf_weight', 0),
+                    'has_xml': data.get('has_xml', False),
+                    'has_pdf': data.get('has_pdf', False),
+                    'omitido': True,
+                    'motivo': f'DOCUMENTO_RECHAZADO_{tipo_documento.upper()}',
+                    'tipo_documento': tipo_documento,
+                    'mensaje': f'El documento es una {tipo_label} y no se procesa en el sistema'
+                }
+            )
+        # ─────────────────────────────────────────────────────────────────────
+        
         # ── Cascada de clasificación con Multi-Agente ─────────────────────────
         # Sistema de agentes especializados que votan por la mejor clasificación:
         # 1. RuleAgent: Reglas exactas (máxima prioridad)
