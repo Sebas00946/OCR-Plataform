@@ -53,7 +53,8 @@ class BaseAgent:
         xml_data: Dict,
         pdf_text: str,
         sucursal_id: Optional[int],
-        proveedor_id: Optional[int]
+        proveedor_id: Optional[int],
+        empresa_id: int = 1
     ) -> Optional[AgentVote]:
         """
         Emite un voto para la clasificación.
@@ -68,17 +69,15 @@ class RuleAgent(BaseAgent):
     def __init__(self):
         super().__init__("RuleAgent", weight=10.0)  # Peso máximo — reglas son definitivas
     
-    def vote(self, xml_data, pdf_text, sucursal_id, proveedor_id) -> Optional[AgentVote]:
+    def vote(self, xml_data, pdf_text, sucursal_id, proveedor_id, empresa_id=1) -> Optional[AgentVote]:
             proveedor = xml_data.get('proveedor', {}) or {}
             nit = ''.join(c for c in str(proveedor.get('nit', '')) if c.isdigit())
 
             if not nit:
                 return None
 
-            import json as _json
-            
-            # Obtener TODAS las reglas (sin filtrar por sucursal)
-            reglas = kb.get_reglas()
+            # Obtener reglas filtradas por empresa (globales + específicas de esta empresa)
+            reglas = kb.get_reglas(empresa_id=empresa_id)
             
             # Filtrar reglas de este NIT
             reglas_nit = []
@@ -185,7 +184,7 @@ class ProviderAgent(BaseAgent):
     def __init__(self):
         super().__init__("ProviderAgent", weight=5.0)
     
-    def vote(self, xml_data, pdf_text, sucursal_id, proveedor_id) -> Optional[AgentVote]:
+    def vote(self, xml_data, pdf_text, sucursal_id, proveedor_id, empresa_id=1) -> Optional[AgentVote]:
         if not proveedor_id:
             proveedor = xml_data.get('proveedor', {}) or {}
             nit = ''.join(c for c in str(proveedor.get('nit', '')) if c.isdigit())
@@ -244,7 +243,7 @@ class BayesianAgent(BaseAgent):
     def __init__(self):
         super().__init__("BayesianAgent", weight=4.0)
     
-    def vote(self, xml_data, pdf_text, sucursal_id, proveedor_id) -> Optional[AgentVote]:
+    def vote(self, xml_data, pdf_text, sucursal_id, proveedor_id, empresa_id=1) -> Optional[AgentVote]:
         if not probabilistic_classifier.loaded:
             return None
         
@@ -286,7 +285,7 @@ class KeywordAgent(BaseAgent):
     def __init__(self):
         super().__init__("KeywordAgent", weight=2.0)
     
-    def vote(self, xml_data, pdf_text, sucursal_id, proveedor_id) -> Optional[AgentVote]:
+    def vote(self, xml_data, pdf_text, sucursal_id, proveedor_id, empresa_id=1) -> Optional[AgentVote]:
         if not pdf_text:
             return None
         
@@ -346,7 +345,7 @@ class FallbackAgent(BaseAgent):
     def __init__(self):
         super().__init__("FallbackAgent", weight=0.5)
     
-    def vote(self, xml_data, pdf_text, sucursal_id, proveedor_id) -> Optional[AgentVote]:
+    def vote(self, xml_data, pdf_text, sucursal_id, proveedor_id, empresa_id=1) -> Optional[AgentVote]:
         # Detectar tipo por contenido
         texto_upper = (pdf_text or '').upper()
         proveedor = xml_data.get('proveedor', {}) or {}
@@ -409,31 +408,21 @@ class MultiAgentClassifier:
         xml_data: Dict,
         pdf_text: str,
         sucursal_id: Optional[int] = None,
-        proveedor_id: Optional[int] = None
+        proveedor_id: Optional[int] = None,
+        empresa_id: int = 1
     ) -> Tuple[Dict, List[AgentVote]]:
         """
         Clasifica usando votación de agentes.
         
         Returns:
             (resultado, votos)
-            
-            resultado = {
-                'success': bool,
-                'id': int,
-                'nombre': str,
-                'codigo': str,
-                'sucursal_id': int,
-                'confidence': float,
-                'method': str,
-                'votes': List[Dict],  # Votos de cada agente
-            }
         """
         # Recolectar votos de todos los agentes
         votos: List[AgentVote] = []
         
         for agent in self.agents:
             try:
-                voto = agent.vote(xml_data, pdf_text, sucursal_id, proveedor_id)
+                voto = agent.vote(xml_data, pdf_text, sucursal_id, proveedor_id, empresa_id)
                 if voto:
                     votos.append(voto)
                     logger.debug(

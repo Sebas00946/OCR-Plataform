@@ -2,7 +2,7 @@
 API REST para clasificación de facturas
 Compatible con Node.js backend
 """
-from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Request
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
@@ -135,6 +135,7 @@ class ClassificationResponse(BaseModel):
     cliente: Optional[dict]  # Datos del cliente
     metadata: dict
     historial_id: Optional[int] = None
+    empresa_id: int = 1  # ID de la empresa (multi-empresa)
 
 
 class ValidationRequest(BaseModel):
@@ -143,6 +144,7 @@ class ValidationRequest(BaseModel):
     sucursal_correcta_id: Optional[int] = None
     unidad_correcta_id: Optional[int] = None
     observaciones: Optional[str] = None
+    empresa_id: int = 1  # ID de la empresa (multi-empresa)
 
 
 # ============================================
@@ -195,16 +197,24 @@ async def classify_invoice(
     background_tasks: BackgroundTasks,
     xml_file: Optional[UploadFile] = File(None),
     pdf_file: Optional[UploadFile] = File(None),
-    factura_id: Optional[int] = None
+    factura_id: Optional[int] = None,
+    empresa_id: int = Form(default=1),           # Multi-empresa (default=1 Medilaser)
+    email_subject: Optional[str] = Form(None),   # Asunto del correo — contiene NIT del proveedor
+    email_from: Optional[str] = Form(None),      # Remitente del correo — validación adicional
+    email_id: Optional[str] = Form(None),        # ID del correo — trazabilidad
 ):
     """
     Clasifica una factura usando XML y/o PDF
-    
+
     Args:
-        xml_file: Archivo XML (opcional)
-        pdf_file: Archivo PDF (opcional)
-        factura_id: ID de la factura en tu sistema (opcional)
-    
+        xml_file:      Archivo XML (opcional)
+        pdf_file:      Archivo PDF (opcional)
+        factura_id:    ID de la factura en el sistema del backend (opcional)
+        empresa_id:    ID de la empresa para filtrar reglas OCR (default=1)
+        email_subject: Asunto del correo — se extrae el NIT como fuente primaria
+        email_from:    Remitente del correo — validación adicional del proveedor
+        email_id:      ID del correo para trazabilidad en historial_ocr
+
     Returns:
         Clasificación con sucursal y unidad funcional
     """
@@ -304,13 +314,6 @@ async def classify_invoice(
             )
         
         # ── Cascada de clasificación con Multi-Agente ─────────────────────────
-        # Sistema de agentes especializados que votan por la mejor clasificación:
-        # 1. RuleAgent: Reglas exactas (máxima prioridad)
-        # 2. ProviderAgent: Config específica del proveedor
-        # 3. BayesianAgent: Inferencia probabilística con historial
-        # 4. KeywordAgent: Scoring tradicional de keywords
-        # 5. FallbackAgent: Heurísticas de último recurso
-        # ─────────────────────────────────────────────────────────────────────
         xml_data = {
             'proveedor': data.get('proveedor', {}),
             'factura': data.get('factura', {}),
@@ -318,7 +321,33 @@ async def classify_invoice(
         }
         pdf_text = data.get('pdf_text', '') or data.get('text', '')
         proveedor_nit = xml_data['proveedor'].get('nit', '') if isinstance(xml_data['proveedor'], dict) else ''
-        
+
+        # ── Extraer NIT del asunto del correo (fuente primaria, más confiable) ──
+        # El asunto suele tener formato: "Factura NIT 900433437 - Farmaquirurgicos"
+        # o directamente el NIT como parte del subject enviado por el proveedor.
+        if email_subject:
+            import re as _re
+            nit_match = _re.search(r'\b(\d{9,10})\b', email_subject)
+            if nit_match:
+                nit_from_subject = nit_match.group(1)
+                # Usar NIT del asunto solo si el XML/PDF no lo encontró o coincide
+                if not proveedor_nit:
+                    proveedor_nit = nit_from_subject
+                    if isinstance(xml_data['proveedor'], dict):
+                        xml_data['proveedor']['nit'] = nit_from_subject
+                        xml_data['proveedor']['nit_source'] = 'email_subject'
+                    ocr_logger.logger.info(f"NIT extraído del asunto del correo: {nit_from_subject}")
+                elif ''.join(c for c in str(proveedor_nit) if c.isdigit()) != nit_from_subject:
+                    # Conflicto: asunto y XML difieren — el asunto tiene prioridad
+                    ocr_logger.logger.warning(
+                        f"NIT conflicto: XML={proveedor_nit} vs asunto={nit_from_subject}. "
+                        f"Usando asunto como fuente primaria."
+                    )
+                    proveedor_nit = nit_from_subject
+                    if isinstance(xml_data['proveedor'], dict):
+                        xml_data['proveedor']['nit'] = nit_from_subject
+                        xml_data['proveedor']['nit_source'] = 'email_subject'
+
         # Obtener proveedor_id
         proveedor_id = None
         if proveedor_nit:
@@ -328,12 +357,12 @@ async def classify_invoice(
                 proveedor_id = prov['id']
         
         # Detectar sucursal primero (necesaria para filtrar unidades)
-        sucursal, _ = fast_classifier.classify(xml_data, pdf_text)
+        sucursal, _ = fast_classifier.classify(xml_data, pdf_text, empresa_id=empresa_id)
         sucursal_id = sucursal.get('id') if sucursal.get('success') else None
         
         # Clasificar con sistema multi-agente
         unidad, votos = multi_agent_classifier.classify(
-            xml_data, pdf_text, sucursal_id, proveedor_id
+            xml_data, pdf_text, sucursal_id, proveedor_id, empresa_id=empresa_id
         )
         
         clasificador_usado = unidad.get('method', 'multi_agent')
@@ -371,8 +400,23 @@ async def classify_invoice(
             unidad=unidad,
             metadata=data,
             proveedor_id=proveedor_match.get('proveedor_id') if proveedor_match else None,
-            confianza_proveedor=proveedor_match.get('confidence') if proveedor_match else None
+            confianza_proveedor=proveedor_match.get('confidence') if proveedor_match else None,
+            empresa_id=empresa_id
         )
+
+        # Guardar en historial_ocr (tabla requerida por backend para trazabilidad de correos)
+        if email_id:
+            background_tasks.add_task(
+                _guardar_historial_ocr,
+                email_id=email_id,
+                empresa_id=empresa_id,
+                sucursal=sucursal,
+                unidad=unidad,
+                proveedor_nit=proveedor_nit,
+                factura_data=data.get('factura', {}),
+                email_from=email_from,
+                email_subject=email_subject,
+            )
         
         # Registrar procesamiento de archivos
         ocr_logger.log_file_processing(
@@ -394,6 +438,7 @@ async def classify_invoice(
             factura=data.get('factura', {}),
             cliente=data.get('cliente', {}),
             historial_id=historial_id,
+            empresa_id=empresa_id,
             metadata={
                 'xml_quality': data['xml_quality'],
                 'xml_weight': data['xml_weight'],
@@ -450,7 +495,8 @@ async def validate_classification(validation: ValidationRequest):
             sucursal_correcta_id=validation.sucursal_correcta_id,
             unidad_correcta_id=validation.unidad_correcta_id,
             observaciones=validation.observaciones,
-            auto_add_keywords=True  # Agregar keywords automáticamente
+            auto_add_keywords=True,
+            empresa_id=validation.empresa_id
         )
         
         return {
@@ -751,6 +797,62 @@ async def extract_comprobantes_egreso_batch(
 # ============================================
 # FUNCIONES AUXILIARES
 # ============================================
+
+def _guardar_historial_ocr(
+    email_id: str,
+    empresa_id: int,
+    sucursal: dict,
+    unidad: dict,
+    proveedor_nit: str,
+    factura_data: dict,
+    email_from: Optional[str] = None,
+    email_subject: Optional[str] = None,
+):
+    """
+    Guarda el resultado de clasificación en historial_ocr.
+    Tabla requerida por el backend para trazabilidad de correos.
+    Se ejecuta como background task para no bloquear la respuesta.
+    """
+    try:
+        numero_factura = factura_data.get('numero') or factura_data.get('numero_factura')
+        score_sucursal = sucursal.get('score', 0) or 0
+        score_unidad = unidad.get('score', 0) or unidad.get('confidence', 0) * 100 or 0
+        score_combinado = (score_sucursal + score_unidad) / 2
+
+        metadata = {
+            'email_from': email_from,
+            'email_subject': email_subject,
+            'metodo': unidad.get('method'),
+            'confidence': unidad.get('confidence', 0),
+        }
+
+        with db.get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                INSERT INTO historial_ocr (
+                    email_id, empresa_id,
+                    sucursal_id, unidad_funcional_id,
+                    score_sucursal, score_unidad, score_combinado,
+                    proveedor_nit, numero_factura,
+                    metadata, created_at, updated_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, NOW(), NOW())
+                ON CONFLICT DO NOTHING
+            """, (
+                email_id, empresa_id,
+                sucursal.get('id'), unidad.get('id'),
+                round(score_sucursal, 2), round(score_unidad, 2), round(score_combinado, 2),
+                proveedor_nit, numero_factura,
+                json.dumps(metadata),
+            ))
+            conn.commit()
+            cur.close()
+    except Exception as e:
+        ocr_logger.log_error(
+            endpoint="_guardar_historial_ocr",
+            error_message=str(e),
+            error_type=type(e).__name__,
+        )
+
 
 def _save_temp_file(upload_file: UploadFile, suffix: str) -> str:
     """Guarda un archivo subido en temporal"""

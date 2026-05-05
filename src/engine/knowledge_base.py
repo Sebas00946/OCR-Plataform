@@ -101,12 +101,35 @@ class KnowledgeBase:
         with self._rlock:
             return list(self._unidades.values())
 
-    def get_reglas(self, sucursal_id: Optional[int] = None) -> List[Dict]:
-        """Retorna reglas de clasificación, opcionalmente filtradas por sucursal."""
+    def get_reglas(self, sucursal_id: Optional[int] = None, empresa_id: Optional[int] = None) -> List[Dict]:
+        """
+        Retorna reglas de clasificación filtradas por sucursal y/o empresa.
+        
+        Lógica multi-empresa:
+        - empresa_id=None → devuelve todas las reglas (globales + específicas)
+        - empresa_id=1    → devuelve reglas globales (empresa_id IS NULL) + reglas de empresa 1
+        - Las reglas específicas de empresa tienen prioridad sobre las globales
+        """
         with self._rlock:
+            reglas = list(self._reglas)
+            
+            # Filtrar por empresa: incluir globales (NULL) + las de la empresa específica
+            if empresa_id is not None:
+                reglas = [
+                    r for r in reglas
+                    if r.get('empresa_id') is None or r.get('empresa_id') == empresa_id
+                ]
+                # Ordenar: reglas específicas de empresa primero, luego globales
+                reglas.sort(key=lambda r: (
+                    0 if r.get('empresa_id') == empresa_id else 1,
+                    -(r.get('prioridad') or 0)
+                ))
+            
+            # Filtrar por sucursal si se especifica
             if sucursal_id:
-                return [r for r in self._reglas if r.get('sucursal_id') == sucursal_id or not r.get('sucursal_id')]
-            return list(self._reglas)
+                reglas = [r for r in reglas if r.get('sucursal_id') == sucursal_id or not r.get('sucursal_id')]
+            
+            return reglas
 
     def get_sinonimos(self) -> List[Dict]:
         with self._rlock:
@@ -272,6 +295,7 @@ class KnowledgeBase:
             cur.execute("""
                 SELECT r.id, r.nombre, r.tipo_regla, r.condicion, r.accion,
                        r.prioridad, r.activo,
+                       r.empresa_id,
                        uf.id   AS unidad_funcional_id,
                        uf.nombre AS unidad_nombre,
                        uf.codigo AS unidad_codigo,

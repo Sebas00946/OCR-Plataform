@@ -60,13 +60,14 @@ class FastClassifier:
     Thread-safe (solo lectura de estructuras inmutables durante clasificación).
     """
 
-    def classify(self, xml_data: Dict, pdf_text: str) -> Tuple[Dict, Dict]:
+    def classify(self, xml_data: Dict, pdf_text: str, empresa_id: int = 1) -> Tuple[Dict, Dict]:
         """
         Clasifica una factura.
 
         Args:
             xml_data: {'proveedor': {...}, 'factura': {...}, 'cliente': {...}}
             pdf_text: Texto extraído del PDF (mayúsculas)
+            empresa_id: ID de la empresa para filtrar reglas (default=1 Medilaser)
 
         Returns:
             (sucursal_result, unidad_result)
@@ -103,7 +104,7 @@ class FastClassifier:
 
         # ── Paso 2: Regla exacta por NIT ─────────────────────────────────
         if nit:
-            regla = self._aplicar_regla_nit(nit, sucursal, texto)
+            regla = self._aplicar_regla_nit(nit, sucursal, texto, empresa_id)
             if regla:
                 # Si la regla define sucursal_id, usar esa sucursal
                 regla_sucursal_id = regla.get('sucursal_id')
@@ -204,7 +205,7 @@ class FastClassifier:
     # REGLAS EXACTAS
     # ─────────────────────────────────────────────────────────────────────────
 
-    def _aplicar_regla_nit(self, nit: str, sucursal: Dict, texto: str = '') -> Optional[Dict]:
+    def _aplicar_regla_nit(self, nit: str, sucursal: Dict, texto: str = '', empresa_id: int = 1) -> Optional[Dict]:
         """
         Aplica reglas de ocr_reglas_clasificacion.
         Las reglas tienen máxima prioridad — son configuradas manualmente.
@@ -213,9 +214,11 @@ class FastClassifier:
         - Simple: {"nit": "900433437"} → aplica siempre para ese NIT
         - Con keyword: {"nit": "900433437", "sucursal_keyword": "FLORENCIA"} → aplica si keyword está en texto
         - Fallback: {"nit": "900433437"} + accion.es_fallback → aplica si ninguna keyword matcheó
+        
+        Filtra por empresa_id: incluye reglas globales (NULL) + reglas de la empresa específica.
         """
-        # Obtener TODAS las reglas (sin filtrar por sucursal, porque la regla define la sucursal)
-        todas_reglas = kb.get_reglas()
+        # Obtener reglas filtradas por empresa (globales + específicas de esta empresa)
+        todas_reglas = kb.get_reglas(empresa_id=empresa_id)
         
         # Filtrar reglas de este NIT
         reglas_nit = []
