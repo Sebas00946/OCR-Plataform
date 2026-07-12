@@ -101,6 +101,22 @@ class KnowledgeBase:
         with self._rlock:
             return list(self._unidades.values())
 
+    def get_unidades_by_empresa(self, empresa_id: int) -> List[Dict]:
+        """Retorna solo las UFs de una empresa específica."""
+        with self._rlock:
+            return [u for u in self._unidades.values() if u.get('empresa_id') == empresa_id]
+
+    def get_sucursales_by_empresa(self, empresa_id: int) -> List[Dict]:
+        """Retorna solo las sucursales de una empresa específica."""
+        with self._rlock:
+            return [s for s in self._sucursales.values() if s.get('empresa_id') == empresa_id]
+
+    def get_unidad_keywords_by_empresa(self, empresa_id: int) -> Dict[int, List]:
+        """Retorna keywords solo de las UFs que pertenecen a una empresa."""
+        with self._rlock:
+            ufs_empresa = {u['id'] for u in self._unidades.values() if u.get('empresa_id') == empresa_id}
+            return {uid: kws for uid, kws in self._unidad_keywords.items() if uid in ufs_empresa}
+
     def get_reglas(self, sucursal_id: Optional[int] = None, empresa_id: Optional[int] = None) -> List[Dict]:
         """
         Retorna reglas de clasificación filtradas por sucursal y/o empresa.
@@ -212,7 +228,7 @@ class KnowledgeBase:
 
     def _load_sucursales(self, cur) -> Dict:
         cur.execute("""
-            SELECT id, nombre, codigo, activo
+            SELECT id, nombre, codigo, empresa_id, activo
             FROM sucursales WHERE activo = TRUE
         """)
         by_id, by_codigo = {}, {}
@@ -224,7 +240,7 @@ class KnowledgeBase:
 
     def _load_unidades(self, cur) -> Dict:
         cur.execute("""
-            SELECT id, nombre, codigo, sucursal_id, activo
+            SELECT id, nombre, codigo, sucursal_id, empresa_id, activo
             FROM unidades_funcionales WHERE activo = TRUE
         """)
         by_id, by_sucursal = {}, {}

@@ -21,6 +21,7 @@ from .logger import ocr_logger
 from .proveedor_matcher import ProveedorMatcher
 from .proveedor_based_classifier import ProveedorBasedClassifier
 from .comprobante_egreso_extractor import ComprobanteEgresoExtractor
+from .document_converter import DocumentConverter
 from .engine.knowledge_base import kb
 from .engine.fast_classifier import fast_classifier
 from .qdrant_classifier import get_qdrant_classifier
@@ -54,6 +55,7 @@ extractor = InvoiceExtractor()
 learning_system = LearningSystem()
 proveedor_matcher = ProveedorMatcher()
 comprobante_extractor = ComprobanteEgresoExtractor()
+document_converter = DocumentConverter()
 
 
 # ============================================
@@ -353,31 +355,39 @@ async def classify_invoice(
         pdf_text = data.get('pdf_text', '') or data.get('text', '')
         proveedor_nit = xml_data['proveedor'].get('nit', '') if isinstance(xml_data['proveedor'], dict) else ''
 
-        # ── Extraer NIT del asunto del correo (fuente primaria, más confiable) ──
-        # El asunto suele tener formato: "Factura NIT 900433437 - Farmaquirurgicos"
-        # o directamente el NIT como parte del subject enviado por el proveedor.
+        # ── Extraer NIT del asunto del correo (fuente adicional) ──
+        # Si el backend envía email_subject, se usa como fuente complementaria
+        # La lectura del XML/PDF siempre es la fuente principal
         if email_subject:
             import re as _re
-            nit_match = _re.search(r'\b(\d{9,10})\b', email_subject)
-            if nit_match:
-                nit_from_subject = nit_match.group(1)
-                # Usar NIT del asunto solo si el XML/PDF no lo encontró o coincide
+            
+            # Limpiar prefijos de reenvío
+            clean_subject = _re.sub(r'^(RV|RE|FW|Fwd):\s*', '', email_subject, flags=_re.IGNORECASE).strip()
+            
+            # Extraer NIT del asunto como complemento
+            parts = clean_subject.split(';')
+            nit_from_subject = None
+            nombre_from_subject = None
+            
+            if len(parts) >= 3 and parts[0].strip().replace('-', '').isdigit():
+                nit_from_subject = _re.sub(r'[^0-9]', '', parts[0].strip())
+                nombre_from_subject = parts[1].strip()
+            else:
+                nit_match = _re.search(r'\b(\d{6,10})\b', clean_subject)
+                if nit_match:
+                    nit_from_subject = nit_match.group(1)
+            
+            # Solo usar NIT del asunto si el XML/PDF no pudo extraerlo
+            if nit_from_subject:
                 if not proveedor_nit:
                     proveedor_nit = nit_from_subject
                     if isinstance(xml_data['proveedor'], dict):
                         xml_data['proveedor']['nit'] = nit_from_subject
                         xml_data['proveedor']['nit_source'] = 'email_subject'
-                    ocr_logger.logger.info(f"NIT extraído del asunto del correo: {nit_from_subject}")
-                elif ''.join(c for c in str(proveedor_nit) if c.isdigit()) != nit_from_subject:
-                    # Conflicto: asunto y XML difieren — el asunto tiene prioridad
-                    ocr_logger.logger.warning(
-                        f"NIT conflicto: XML={proveedor_nit} vs asunto={nit_from_subject}. "
-                        f"Usando asunto como fuente primaria."
-                    )
-                    proveedor_nit = nit_from_subject
-                    if isinstance(xml_data['proveedor'], dict):
-                        xml_data['proveedor']['nit'] = nit_from_subject
-                        xml_data['proveedor']['nit_source'] = 'email_subject'
+                        if nombre_from_subject and not xml_data['proveedor'].get('nombre'):
+                            xml_data['proveedor']['nombre'] = nombre_from_subject
+                            xml_data['proveedor']['razon_social'] = nombre_from_subject
+                    ocr_logger.logger.info(f"NIT complementado del asunto: {nit_from_subject}")
 
         # Obtener proveedor_id
         proveedor_id = None
@@ -823,6 +833,136 @@ async def extract_comprobantes_egreso_batch(
         for path in pdf_paths:
             if os.path.exists(path):
                 os.unlink(path)
+
+
+# ============================================
+# CONVERTIDOR DE DOCUMENTOS PDF
+# ============================================
+
+from fastapi.responses import FileResponse
+
+@app.post("/api/document/convert")
+async def convert_document(
+    pdf_file: UploadFile = File(...),
+    output_format: str = Form("excel"),
+    language: str = Form("spa"),
+    pages: Optional[str] = Form(None),
+    password: Optional[str] = Form(None),
+):
+    """
+    Convierte un PDF a Excel, Word, JSON o imagen.
+    
+    Lee cualquier PDF (nativo o escaneado) y extrae todo su contenido.
+    Si el PDF está protegido con contraseña, envíe el campo 'password'.
+
+    Args:
+        pdf_file: Archivo PDF a convertir
+        output_format: Formato de salida ('excel', 'word', 'json', 'image')
+        language: Idioma para OCR en PDFs escaneados ('spa', 'eng')
+        pages: Páginas a procesar separadas por coma (ej: '1,2,5'). Vacío = todas.
+        password: Contraseña del PDF si está protegido (opcional)
+
+    Returns:
+        - excel/word/image: Archivo descargable
+        - json: Datos extraídos en JSON
+        - Si requiere contraseña: { success: false, password_required: true }
+    """
+    pdf_path = None
+
+    try:
+        # Validar
+        if not pdf_file.filename.lower().endswith('.pdf'):
+            raise HTTPException(status_code=400, detail="El archivo debe ser un PDF")
+
+        pdf_file.file.seek(0, 2)
+        if pdf_file.file.tell() == 0:
+            raise HTTPException(status_code=400, detail="El archivo PDF está vacío")
+        pdf_file.file.seek(0)
+
+        valid_formats = ('excel', 'word', 'json', 'image')
+        if output_format not in valid_formats:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Formato no válido. Use: {', '.join(valid_formats)}"
+            )
+
+        # Guardar temporal
+        pdf_path = _save_temp_file(pdf_file, ".pdf")
+
+        # Parsear páginas
+        pages_list = None
+        if pages:
+            try:
+                pages_list = [int(p.strip()) for p in pages.split(',') if p.strip()]
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Formato de páginas inválido. Use: 1,2,5")
+
+        # Convertir
+        options = {
+            'language': language,
+            'pages': pages_list,
+            'extract_tables': True,
+            'output_dir': tempfile.gettempdir(),
+            'password': password
+        }
+
+        # Log para debug de password
+        ocr_logger.logger.debug(f"Document convert: format={output_format}, password={'***' if password else 'None'}, pages={pages_list}")
+
+        resultado = document_converter.convert(pdf_path, output_format, options)
+
+        # Si requiere contraseña, retornar 401
+        if resultado.get('password_required'):
+            return {
+                'success': False,
+                'password_required': True,
+                'error': resultado.get('error')
+            }
+
+        if not resultado.get('success'):
+            raise HTTPException(status_code=422, detail=resultado.get('error', 'Error desconocido'))
+
+        # Retornar según formato
+        if output_format == 'json':
+            return resultado.get('data', {})
+        else:
+            output_path = resultado['output_path']
+            filename = os.path.basename(output_path)
+
+            media_types = {
+                'excel': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                'word': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                'image': 'image/png'
+            }
+
+            return FileResponse(
+                path=output_path,
+                filename=filename,
+                media_type=media_types.get(output_format, 'application/octet-stream')
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        ocr_logger.log_error(
+            endpoint="/api/document/convert",
+            error_message=str(e),
+            error_type=type(e).__name__,
+            traceback_info=traceback.format_exc()
+        )
+        raise HTTPException(status_code=500, detail=f"Error interno: {str(e)}")
+    finally:
+        if pdf_path and os.path.exists(pdf_path):
+            os.unlink(pdf_path)
+
+
+@app.get("/api/document/capabilities")
+async def get_document_capabilities():
+    """
+    Retorna las capacidades disponibles del convertidor de documentos.
+    Útil para saber si el OCR puede leer PDFs escaneados o solo nativos.
+    """
+    return document_converter.get_capabilities()
 
 
 # ============================================

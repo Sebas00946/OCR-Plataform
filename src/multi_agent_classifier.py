@@ -290,7 +290,12 @@ class KeywordAgent(BaseAgent):
             return None
         
         texto_upper = pdf_text.upper()
-        all_keywords = kb.get_all_unidad_keywords()
+        
+        # Filtrar keywords por empresa (solo UFs de esta empresa)
+        if empresa_id:
+            all_keywords = kb.get_unidad_keywords_by_empresa(empresa_id)
+        else:
+            all_keywords = kb.get_all_unidad_keywords()
         
         # Filtrar por sucursal si se especificó
         if sucursal_id:
