@@ -76,7 +76,7 @@ class ProbabilisticClassifier:
                 WHERE 
                     (h.clasificacion_correcta = TRUE OR h.unidad_correcta_id IS NOT NULL)
                     AND h.unidad_funcional_detectada_id IS NOT NULL
-                ORDER BY h.fecha_clasificacion DESC
+                ORDER BY h.created_at DESC
                 LIMIT %s
             """, (limit,))
             
