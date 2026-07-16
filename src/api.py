@@ -984,6 +984,7 @@ def _guardar_historial_ocr(
     Tabla requerida por el backend para trazabilidad de correos.
     Se ejecuta como background task para no bloquear la respuesta.
     """
+    import json as _json
     try:
         numero_factura = factura_data.get('numero') or factura_data.get('numero_factura')
         score_sucursal = sucursal.get('score', 0) or 0
@@ -1013,7 +1014,7 @@ def _guardar_historial_ocr(
                 sucursal.get('id'), unidad.get('id'),
                 round(score_sucursal, 2), round(score_unidad, 2), round(score_combinado, 2),
                 proveedor_nit, numero_factura,
-                json.dumps(metadata),
+                _json.dumps(metadata),
             ))
             conn.commit()
             cur.close()
