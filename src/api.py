@@ -135,6 +135,8 @@ class ClassificationResponse(BaseModel):
     proveedor_match: Optional[dict]  # Información del match con la BD
     factura: Optional[dict]  # Datos de la factura (número, fecha, cufe)
     cliente: Optional[dict]  # Datos del cliente
+    tipo_documento: Optional[str] = None  # Invoice/CreditNote/DebitNote/Unknown
+    validacion_receptor: Optional[dict] = None  # Valida que el receptor sea la empresa del buzón
     metadata: dict
     historial_id: Optional[int] = None
     empresa_id: int = 1  # ID de la empresa (multi-empresa)
@@ -421,7 +423,19 @@ async def classify_invoice(
             # Si viene anidado, extraer el diccionario interno
             proveedor_data = proveedor_data.get('proveedor', {})
         
-        proveedor_match = proveedor_matcher.match_proveedor(proveedor_data)
+        # Filtrar por empresa_id evita cruces de proveedor entre empresas (bug #1)
+        # y validar NIT vs emisor evita el proveedor equivocado (bug #2)
+        proveedor_match = proveedor_matcher.match_proveedor(proveedor_data, empresa_id=empresa_id)
+
+        # ── Validar que el receptor del XML sea la empresa del buzón (doc 3.6) ──
+        validacion_receptor = extractor.validar_receptor_empresa(
+            data.get('cliente', {}), empresa_id
+        )
+        if not validacion_receptor['valido']:
+            ocr_logger.logger.warning(
+                f"⚠️ {validacion_receptor['motivo']} "
+                f"(email_id={email_id})"
+            )
         
         # Preparar datos de factura completos (incluyendo valores)
         factura_data = data.get('factura', {})
@@ -478,6 +492,8 @@ async def classify_invoice(
             proveedor_match=proveedor_match,
             factura=data.get('factura', {}),
             cliente=data.get('cliente', {}),
+            tipo_documento=data.get('tipo_documento'),
+            validacion_receptor=validacion_receptor,
             historial_id=historial_id,
             empresa_id=empresa_id,
             metadata={
@@ -486,7 +502,8 @@ async def classify_invoice(
                 'pdf_weight': data['pdf_weight'],
                 'has_xml': data['has_xml'],
                 'has_pdf': data['has_pdf'],
-                'clasificador': clasificador_usado
+                'clasificador': clasificador_usado,
+                'elapsed_total': data.get('_elapsed_total')
             }
         )
     

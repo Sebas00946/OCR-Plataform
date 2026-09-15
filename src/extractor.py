@@ -2,14 +2,59 @@
 Extractor de texto de XML y PDF
 Extrae datos estructurados de facturas electrónicas colombianas
 Optimizado para pdfplumber con extracción mejorada
+
+Mejoras v2:
+- Fix crítico: NIT siempre del EMISOR (AccountingSupplierParty), nunca del receptor
+- Lista de NITs bloqueados (empresas propias Medilaser)
+- Solo primera página del PDF para extracción rápida
+- Cache por hash de archivo (evita reprocesar el mismo PDF)
+- Logging por etapa con tiempos
+- Detección de PDF de factura real vs anexos
+- Integración OpenRouter (no-bloqueante) para clasificación difícil
 """
 import xml.etree.ElementTree as ET
 import pdfplumber
 import re
 import traceback
 import os
+import time
+import hashlib
 from typing import Dict, Tuple, Optional
 from .logger import ocr_logger
+
+
+# ─── NITs de EMPRESAS PROPIAS (receptores) — nunca son el proveedor emisor ───
+# Doc 3.6: "validar que el receptor del XML sea una de las empresas propias".
+# Si el OCR detecta uno de estos NITs como "proveedor", está leyendo el receptor.
+# Mapa NIT_normalizado -> empresa_id (según el documento del equipo Node.js).
+EMPRESAS_PROPIAS = {
+    '813001952': 1,   # CLINICA MEDILASER S.A.S
+    '901406138': 2,   # REDPLUS INTEGRAL SAS
+    '813008574': 4,   # MEGASALUD IPS SAS
+    '830123310': 5,   # TORREON
+    '900190623': 6,   # FUNDACION MEDILASER
+}
+# Estos NITs nunca deben aceptarse como proveedor (son receptores propios)
+NITS_SOLO_RECEPTOR = set(EMPRESAS_PROPIAS.keys())
+
+# ─── Cache de resultados por hash de archivo ───────────────────────────────
+_pdf_cache: Dict[str, Tuple] = {}
+_xml_cache: Dict[str, Tuple] = {}
+MAX_CACHE_SIZE = 200  # máximo 200 archivos en cache
+
+
+def _file_hash(path: str) -> str:
+    """Calcula hash MD5 de un archivo para cache."""
+    try:
+        with open(path, 'rb') as f:
+            return hashlib.md5(f.read(65536)).hexdigest()  # solo primeros 64KB
+    except Exception:
+        return ''
+
+
+# ─── Prefijos/nombres de PDFs que son ANEXOS, no la factura real ───────────
+PREFIJOS_ANEXO = ('dian_', 'acta_', 'pago_', 'revfiscal', 'prorrateo', 'cxp_', 'soporte_')
+KEYWORDS_ANEXO = ('ACTA', 'PAGO', 'REVFISCAL', 'PRORRATEO', 'CXP', 'SOPORTE', 'COMPROBANTE')
 
 
 class InvoiceExtractor:
@@ -130,9 +175,31 @@ class InvoiceExtractor:
                 './/cac:SenderParty//cac:PartyTaxScheme//cbc:CompanyID',
             ])
             if supplier_nit:
-                structured_data['proveedor']['nit_original'] = supplier_nit.strip()
-                structured_data['proveedor']['nit'] = self._limpiar_nit(supplier_nit)
-                quality_score += 1
+                nit_limpio = self._limpiar_nit(supplier_nit)
+                # ── Fix crítico: nunca tomar NIT del receptor como proveedor ──
+                if nit_limpio in NITS_SOLO_RECEPTOR:
+                    ocr_logger.logger.warning(
+                        f"NIT {nit_limpio} es empresa propia (receptor), se descarta como proveedor"
+                    )
+                    # Intentar buscar en invoice_root embebido
+                    alt_nit = self._extract_text(invoice_root, [
+                        './/cac:AccountingSupplierParty//cac:Party//cac:PartyTaxScheme//cbc:CompanyID',
+                        './/cac:AccountingSupplierParty//cac:Party//cac:PartyLegalEntity//cbc:CompanyID',
+                    ])
+                    if alt_nit:
+                        alt_limpio = self._limpiar_nit(alt_nit)
+                        if alt_limpio not in NITS_SOLO_RECEPTOR:
+                            nit_limpio = alt_limpio
+                            supplier_nit = alt_nit
+                        else:
+                            supplier_nit = None
+                    else:
+                        supplier_nit = None
+                
+                if supplier_nit:
+                    structured_data['proveedor']['nit_original'] = supplier_nit.strip()
+                    structured_data['proveedor']['nit'] = nit_limpio
+                    quality_score += 1
             
             # Dirección del proveedor
             supplier_address = self._extract_text(root, [
@@ -447,6 +514,14 @@ class InvoiceExtractor:
             ])
             if customer_nit:
                 structured_data['cliente']['nit'] = self._limpiar_nit(customer_nit)
+                structured_data['cliente']['nit_original'] = customer_nit.strip()
+
+            # ── InvoiceTypeCode explícito (doc 3.6): 01/02/03=factura, 91=NC, 92=ND ──
+            type_code = self._extract_text(invoice_root, ['.//cbc:InvoiceTypeCode'])
+            if type_code:
+                structured_data['factura']['invoice_type_code'] = type_code.strip()
+                # es_factura_venta: solo 01/02/03 son facturas de venta
+                structured_data['factura']['es_factura_venta'] = type_code.strip() in ('01', '02', '03')
             
             # ============================================
             # DIRECCIÓN DE ENTREGA (IMPORTANTE PARA CLASIFICACIÓN)
@@ -514,46 +589,64 @@ class InvoiceExtractor:
     
     def extract_from_pdf(self, pdf_path: str) -> Tuple[str, Dict]:
         """
-        Extrae texto del PDF, con fallback OCR si no hay texto seleccionable
+        Extrae texto del PDF, con fallback OCR si no hay texto seleccionable.
+        
+        Optimizaciones:
+        - Cache por hash del archivo (evita reprocesar el mismo PDF)
+        - Solo procesa primera página para extracción rápida
+        - Logging por etapa con tiempos
         """
         if not os.path.exists(pdf_path):
             ocr_logger.log_error("InvoiceExtractor", f"Archivo PDF no encontrado: {pdf_path}")
             return "", {'proveedor': {}, 'factura': {}}
 
+        # ── Cache: si ya procesamos este PDF, retornar resultado cacheado ──
+        file_hash = _file_hash(pdf_path)
+        if file_hash and file_hash in _pdf_cache:
+            ocr_logger.logger.debug(f"PDF cache hit: {os.path.basename(pdf_path)}")
+            return _pdf_cache[file_hash]
+
+        t0 = time.time()
+
         try:
             text_parts = []
             
             with pdfplumber.open(pdf_path) as pdf:
-                for page in pdf.pages:
-                    # Extraer texto normal
+                total_pages = len(pdf.pages)
+                
+                # ── Optimización: solo primera página para extracción rápida ──
+                # La primera página contiene NIT, proveedor, número y valores
+                # Las páginas adicionales son items/detalles que no aportan a clasificación
+                pages_to_process = pdf.pages[:1]  # Solo página 1
+                
+                for page in pages_to_process:
                     page_text = page.extract_text() or ""
                     text_parts.append(page_text)
                     
-                    # Intentar extraer tablas (mejora la extracción de datos estructurados)
+                    # Extraer tablas de primera página
                     tables = page.extract_tables()
                     if tables:
                         for table in tables:
-                            # Convertir tabla a texto
                             for row in table:
                                 if row:
                                     row_text = ' '.join([str(cell) if cell else '' for cell in row])
                                     text_parts.append(row_text)
             
-            # Combinar todo el texto
             full_text = '\n'.join(text_parts)
-            
-            # Limpiar texto (remover caracteres problemáticos pero mantener estructura)
             full_text = self._clean_pdf_text(full_text)
             
+            t1 = time.time()
+            ocr_logger.logger.debug(f"PDF extracción nativa: {t1-t0:.2f}s | {total_pages} páginas | {len(full_text)} chars")
 
-            # Fallback OCR si el texto es insuficiente
+            # Fallback OCR solo si el texto es insuficiente
             if len(full_text.strip()) < 100:
                 ocr_text = self._ocr_pdf(pdf_path)
                 if ocr_text:
                     full_text = self._clean_pdf_text(ocr_text)
+                t2 = time.time()
+                ocr_logger.logger.debug(f"PDF fallback OCR: {t2-t1:.2f}s")
             
             ocr_logger.logger.info(f"PDF extraido: {len(full_text)} caracteres")
-
             
             # Extraer datos estructurados
             structured_data = self._extract_pdf_structured_data(full_text)
@@ -561,7 +654,18 @@ class InvoiceExtractor:
             if valores:
                 structured_data['factura']['valores'] = valores
             
-            return full_text.upper(), structured_data
+            result = full_text.upper(), structured_data
+
+            # ── Guardar en cache ──
+            if file_hash:
+                if len(_pdf_cache) >= MAX_CACHE_SIZE:
+                    # Limpiar la mitad más vieja
+                    keys = list(_pdf_cache.keys())
+                    for k in keys[:MAX_CACHE_SIZE // 2]:
+                        del _pdf_cache[k]
+                _pdf_cache[file_hash] = result
+            
+            return result
             
         except Exception as e:
             ocr_logger.log_error(
@@ -644,7 +748,7 @@ class InvoiceExtractor:
             return ""
         
         try:
-            images = convert_from_path(pdf_path, dpi=300)
+            images = convert_from_path(pdf_path, dpi=300, first_page=1, last_page=1)
             ocr_text_parts = []
             for img in images:
                 open_cv_image = np.array(img.convert('RGB'))[:, :, ::-1]
@@ -1151,28 +1255,42 @@ class InvoiceExtractor:
     
     def extract_combined(self, xml_path: str = None, pdf_path: str = None) -> Dict:
         """
-        Extrae texto de XML y PDF combinados con pesos inteligentes
+        Extrae texto de XML y PDF combinados con pesos inteligentes.
+        
+        Mejoras:
+        - Detecta cuál PDF es la factura real (vs anexos)
+        - Logging de tiempo por etapa
+        - NIT del email_subject como fuente primaria
         
         Args:
             xml_path: Ruta al XML (opcional)
-            pdf_path: Ruta al PDF (opcional)
+            pdf_path: Ruta al PDF principal (opcional) o lista de rutas
             
         Returns:
             Dict con texto combinado, metadatos y datos estructurados
         """
+        t_total = time.time()
         xml_text = ""
         pdf_text = ""
         xml_quality = 0.0
         xml_structured = {'proveedor': {}, 'factura': {}, 'cliente': {}}
         pdf_structured = {'proveedor': {}, 'factura': {}}
         
+        # ── Si pdf_path es lista, seleccionar el PDF de la factura real ──
+        if isinstance(pdf_path, (list, tuple)):
+            pdf_path = self._seleccionar_pdf_factura(pdf_path, xml_path)
+        
         # Extraer XML si existe
         if xml_path:
+            t0 = time.time()
             xml_text, xml_quality, xml_structured = self.extract_from_xml(xml_path)
+            ocr_logger.logger.debug(f"Etapa XML: {time.time()-t0:.2f}s | calidad={xml_quality:.2f}")
         
         # Extraer PDF si existe
         if pdf_path:
+            t0 = time.time()
             pdf_text, pdf_structured = self.extract_from_pdf(pdf_path)
+            ocr_logger.logger.debug(f"Etapa PDF: {time.time()-t0:.2f}s | chars={len(pdf_text)}")
         
         # Calcular pesos dinámicos
         if xml_text and pdf_text:
@@ -1221,8 +1339,92 @@ class InvoiceExtractor:
             # Datos estructurados
             'proveedor': proveedor_data,
             'factura': factura_data,
-            'cliente': xml_structured.get('cliente', {})
+            'cliente': xml_structured.get('cliente', {}),
+            'tipo_documento': xml_structured.get('tipo_documento', 'Unknown'),
+            '_elapsed_total': round(time.time() - t_total, 3)
         }
+
+    def _seleccionar_pdf_factura(self, pdf_paths, xml_path=None) -> Optional[str]:
+        """
+        Cuando llegan varios PDFs (factura + anexos), selecciona el que
+        realmente es la factura de venta y descarta actas, pagos, soportes, etc.
+
+        Heurística:
+        1. Descartar PDFs cuyo nombre indique anexo (dian_, acta_, pago_, ...).
+        2. Preferir el PDF cuyo nombre contenga el número de factura del XML.
+        3. Si nada aplica, usar el primero no-anexo; si todos son anexos, el primero.
+        """
+        if not pdf_paths:
+            return None
+        paths = [p for p in pdf_paths if p]
+        if len(paths) == 1:
+            return paths[0]
+
+        # Número de factura desde el XML (si está disponible) para priorizar
+        numero_factura = None
+        if xml_path and os.path.exists(xml_path):
+            try:
+                _, _, xml_struct = self.extract_from_xml(xml_path)
+                numero_factura = (xml_struct.get('factura', {}) or {}).get('numero')
+            except Exception:
+                numero_factura = None
+
+        no_anexos = []
+        for p in paths:
+            nombre = os.path.basename(p).lower()
+            es_anexo = (
+                nombre.startswith(PREFIJOS_ANEXO)
+                or any(kw in nombre.upper() for kw in KEYWORDS_ANEXO)
+            )
+            if not es_anexo:
+                no_anexos.append(p)
+
+        candidatos = no_anexos if no_anexos else paths
+
+        # Preferir el que contenga el número de factura en el nombre
+        if numero_factura:
+            num_norm = re.sub(r'[^0-9A-Za-z]', '', str(numero_factura)).lower()
+            for p in candidatos:
+                nombre_norm = re.sub(r'[^0-9A-Za-z]', '', os.path.basename(p)).lower()
+                if num_norm and num_norm in nombre_norm:
+                    ocr_logger.logger.debug(f"PDF factura seleccionado por número: {os.path.basename(p)}")
+                    return p
+
+        ocr_logger.logger.debug(f"PDF factura seleccionado (heurística): {os.path.basename(candidatos[0])}")
+        return candidatos[0]
+
+    def validar_receptor_empresa(self, cliente: Dict, empresa_id: int) -> Dict:
+        """
+        Valida que el receptor del XML sea la empresa del buzón (doc 3.6).
+        
+        Si el NIT del receptor pertenece a otra empresa propia, es un correo
+        mal enrutado y debe marcarse para que el backend NO lo asigne aquí.
+        
+        Returns:
+            {'valido': bool, 'empresa_esperada': int|None, 'motivo': str}
+        """
+        nit_receptor = self._limpiar_nit(cliente.get('nit', '')) if cliente else ''
+        if not nit_receptor:
+            return {'valido': True, 'empresa_esperada': None,
+                    'motivo': 'Sin NIT de receptor en XML (no se puede validar)'}
+        
+        empresa_del_receptor = EMPRESAS_PROPIAS.get(nit_receptor)
+        if empresa_del_receptor is None:
+            # El receptor no es empresa propia conocida: dejar pasar pero avisar
+            return {'valido': True, 'empresa_esperada': None,
+                    'motivo': f'Receptor {nit_receptor} no está en el catálogo de empresas propias'}
+        
+        if empresa_del_receptor != empresa_id:
+            return {
+                'valido': False,
+                'empresa_esperada': empresa_del_receptor,
+                'motivo': (f'Correo mal enrutado: el XML es para empresa '
+                           f'{empresa_del_receptor} (NIT {nit_receptor}) pero llegó al '
+                           f'buzón de la empresa {empresa_id}')
+            }
+        
+        return {'valido': True, 'empresa_esperada': empresa_del_receptor,
+                'motivo': 'Receptor coincide con la empresa del buzón'}
     
     def _merge_proveedor_data(self, xml_data: Dict, pdf_data: Dict) -> Dict:
         """

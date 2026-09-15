@@ -22,20 +22,20 @@ class ProveedorMatcher:
         # Se mantiene por compatibilidad
         pass
     
-    def match_proveedor(self, proveedor_data: Dict) -> Dict:
+    def match_proveedor(self, proveedor_data: Dict, empresa_id: Optional[int] = None) -> Dict:
         """
-        Busca y relaciona un proveedor con la base de datos
-        
+        Busca y relaciona un proveedor con la base de datos.
+
+        Alineado con el documento de mejoras del equipo Node.js:
+        - Bug #1: filtra SIEMPRE por empresa_id (no hace fallback cross-empresa).
+        - Bug #2: el match por NOMBRE solo se acepta si el NIT del candidato
+          coincide con el NIT del emisor (evita GROUPJR->HYDROHER).
+        - Bug #3: normaliza el NIT (solo dígitos) antes de comparar.
+
         Args:
-            proveedor_data: Datos extraídos del XML/PDF
-                {
-                    'nombre': 'DISTRIBUIDORA EJEMPLO S.A.S',
-                    'razon_social': 'DISTRIBUIDORA EJEMPLO S.A.S',
-                    'nit': '900123456',
-                    'direccion': '...',
-                    'ciudad': '...'
-                }
-        
+            proveedor_data: Datos extraídos del XML/PDF (nombre, razon_social, nit, ...)
+            empresa_id: Empresa del buzón. Si se pasa, la búsqueda se acota a ella.
+
         Returns:
             Dict con información del proveedor y match
         """
@@ -45,6 +45,7 @@ class ProveedorMatcher:
         # Obtener NIT y nombre
         nit = proveedor_data.get('nit', '')
         nombre = proveedor_data.get('nombre') or proveedor_data.get('razon_social', '')
+        nit_emisor = re.sub(r'[^0-9]', '', str(nit)) if nit else ''
         
         if not nit and not nombre:
             return self._empty_result(proveedor_data)
@@ -55,7 +56,7 @@ class ProveedorMatcher:
             try:
                 # 1. Intentar match por NIT (más confiable)
                 if nit:
-                    result = self._match_by_nit(cursor, nit)
+                    result = self._match_by_nit(cursor, nit, empresa_id)
                     if result:
                         return {
                             'matched': True,
@@ -68,8 +69,27 @@ class ProveedorMatcher:
                 
                 # 2. Intentar match por nombre (menos confiable)
                 if nombre:
-                    result, confidence = self._match_by_nombre(cursor, nombre)
+                    result, confidence = self._match_by_nombre(cursor, nombre, empresa_id)
                     if result and confidence >= 0.80:
+                        # ── Bug #2: validar que el NIT del candidato coincida con el emisor ──
+                        if nit_emisor:
+                            nit_candidato = re.sub(r'[^0-9]', '', str(result.get('nit', '')))
+                            # Comparar primeros 9 dígitos (tolerar dígito de verificación)
+                            if nit_candidato[:9] != nit_emisor[:9]:
+                                # El nombre coincide pero es otro proveedor: NO aceptar
+                                return {
+                                    'matched': False,
+                                    'proveedor_id': None,
+                                    'confidence': 0.0,
+                                    'match_method': None,
+                                    'proveedor_db': None,
+                                    'datos_extraidos': proveedor_data,
+                                    'sugerencia': (
+                                        f'Match por nombre descartado: NIT emisor {nit_emisor} '
+                                        f'no coincide con candidato {nit_candidato} '
+                                        f'({result.get("razon_social")})'
+                                    )
+                                }
                         return {
                             'matched': True,
                             'proveedor_id': result['id'],
@@ -104,13 +124,17 @@ class ProveedorMatcher:
             'datos_extraidos': proveedor_data or {}
         }
     
-    def _match_by_nit(self, cursor, nit: str) -> Optional[Dict]:
+    def _match_by_nit(self, cursor, nit: str, empresa_id: Optional[int] = None) -> Optional[Dict]:
         """
-        Busca proveedor por NIT en la tabla proveedores
+        Busca proveedor por NIT en la tabla proveedores.
+        
+        Bug #1: si se pasa empresa_id, la búsqueda se acota a esa empresa
+        (no hace fallback global cross-empresa que causaba los cruces).
         
         Args:
             cursor: Cursor de base de datos
             nit: NIT del proveedor (solo números)
+            empresa_id: Empresa del buzón (filtro obligatorio si se conoce)
         
         Returns:
             Información del proveedor o None
@@ -121,49 +145,41 @@ class ProveedorMatcher:
         if not nit_limpio or len(nit_limpio) < 6:
             return None
         
+        # Filtro de empresa (evita cruces cross-empresa)
+        empresa_sql = " AND empresa_id = %s" if empresa_id is not None else ""
+        
         try:
-            # Buscar en tabla proveedores
-            # Comparar NIT limpio (sin guiones, puntos, espacios)
-            cursor.execute("""
-                SELECT 
-                    id,
-                    nit,
-                    razon_social,
-                    nombre_comercial,
-                    email,
-                    telefono,
-                    direccion,
-                    activo
+            # 1. Match exacto por NIT normalizado
+            params = [nit_limpio]
+            if empresa_id is not None:
+                params.append(empresa_id)
+            cursor.execute(f"""
+                SELECT id, nit, razon_social, nombre_comercial,
+                       email, telefono, direccion, activo
                 FROM proveedores
                 WHERE REGEXP_REPLACE(nit, '[^0-9]', '', 'g') = %s
-                    AND activo = TRUE
+                    AND activo = TRUE{empresa_sql}
                 LIMIT 1
-            """, (nit_limpio,))
+            """, tuple(params))
             
             result = cursor.fetchone()
             if result:
                 return result
             
-            # Si no encuentra exacto, buscar parcial (sin dígito de verificación)
+            # 2. Match parcial (sin dígito de verificación)
             if len(nit_limpio) >= 9:
-                nit_base = nit_limpio[:9]  # Primeros 9 dígitos
-                
-                cursor.execute("""
-                    SELECT 
-                        id,
-                        nit,
-                        razon_social,
-                        nombre_comercial,
-                        email,
-                        telefono,
-                        direccion,
-                        activo
+                nit_base = nit_limpio[:9]
+                params = [f"{nit_base}%"]
+                if empresa_id is not None:
+                    params.append(empresa_id)
+                cursor.execute(f"""
+                    SELECT id, nit, razon_social, nombre_comercial,
+                           email, telefono, direccion, activo
                     FROM proveedores
                     WHERE REGEXP_REPLACE(nit, '[^0-9]', '', 'g') LIKE %s
-                        AND activo = TRUE
+                        AND activo = TRUE{empresa_sql}
                     LIMIT 1
-                """, (f"{nit_base}%",))
-                
+                """, tuple(params))
                 return cursor.fetchone()
                 
             return None
@@ -171,9 +187,10 @@ class ProveedorMatcher:
         except Exception:
             return None
     
-    def _match_by_nombre(self, cursor, nombre: str) -> Tuple[Optional[Dict], float]:
+    def _match_by_nombre(self, cursor, nombre: str, empresa_id: Optional[int] = None) -> Tuple[Optional[Dict], float]:
         """
-        Busca proveedor por similitud de nombre
+        Busca proveedor por similitud de nombre.
+        Bug #1: acota a la empresa del buzón si se conoce.
         
         Returns:
             Tuple[Proveedor, Confianza]
@@ -183,21 +200,21 @@ class ProveedorMatcher:
             
         nombre_clean = nombre.upper().strip()
         
-        # Buscar proveedores que podrían coincidir (búsqueda básica primero)
-        # Usamos ILIKE para filtrar candidatos
-        cursor.execute("""
-            SELECT 
-                id,
-                nit,
-                razon_social,
-                nombre_comercial,
-                email,
-                telefono,
-                direccion,
-                activo
-            FROM proveedores
-            WHERE activo = TRUE
-        """)
+        # Buscar candidatos (acotados a la empresa si se conoce)
+        if empresa_id is not None:
+            cursor.execute("""
+                SELECT id, nit, razon_social, nombre_comercial,
+                       email, telefono, direccion, activo
+                FROM proveedores
+                WHERE activo = TRUE AND empresa_id = %s
+            """, (empresa_id,))
+        else:
+            cursor.execute("""
+                SELECT id, nit, razon_social, nombre_comercial,
+                       email, telefono, direccion, activo
+                FROM proveedores
+                WHERE activo = TRUE
+            """)
         
         proveedores = cursor.fetchall()
         

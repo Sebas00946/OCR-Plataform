@@ -1,10 +1,17 @@
 """
-Clasificador LLM usando Ollama como fallback de último recurso.
+Clasificador LLM de último recurso.
 Fase 3 del plan de mejoras con IA.
 
-Requiere Ollama corriendo localmente:
-  winget install Ollama.Ollama
-  ollama pull llama3.2:3b
+Soporta dos backends (se elige automáticamente):
+  1. OpenRouter (cloud) — si OPENROUTER_API_KEY está configurada. No requiere
+     infraestructura local; da acceso a modelos potentes por API.
+  2. Ollama (local)     — fallback si no hay OpenRouter. Requiere Ollama corriendo:
+       winget install Ollama.Ollama
+       ollama pull llama3.2:3b
+
+Diseño NO-BLOQUEANTE: si el backend no está configurado, falla o hace timeout,
+`classify()` devuelve None y el pipeline continúa con su clasificación normal.
+Nunca detiene ni retrasa de forma crítica el procesamiento de la factura.
 
 Se activa SOLO cuando score de keywords < 50 Y Qdrant no encontró similitud.
 """
@@ -17,18 +24,37 @@ from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
+# ── Ollama (backend local) ──
 OLLAMA_URL = os.getenv('OLLAMA_URL', 'http://localhost:11434')
 OLLAMA_MODEL = os.getenv('OLLAMA_MODEL', 'llama3.2:3b')
 OLLAMA_TIMEOUT = int(os.getenv('OLLAMA_TIMEOUT_SECONDS', '15'))
 
+# ── OpenRouter (backend cloud) ──
+OPENROUTER_API_KEY = os.getenv('OPENROUTER_API_KEY', '').strip()
+OPENROUTER_URL = os.getenv('OPENROUTER_URL', 'https://openrouter.ai/api/v1/chat/completions')
+OPENROUTER_MODEL = os.getenv('OPENROUTER_MODEL', 'meta-llama/llama-3.3-70b-instruct:free')
+OPENROUTER_TIMEOUT = int(os.getenv('OPENROUTER_TIMEOUT_SECONDS', '20'))
+
+
 class LLMClassifier:
     """
-    Clasificador de último recurso usando LLM local (Ollama).
+    Clasificador de último recurso usando un LLM (OpenRouter cloud u Ollama local).
     Solo se activa cuando los métodos anteriores no tienen suficiente confianza.
+
+    Prioridad de backend:
+      - OpenRouter si hay OPENROUTER_API_KEY (no requiere infra local).
+      - Ollama en caso contrario.
     """
 
     def __init__(self):
-        self._available = self._check_ollama()
+        # Preferir OpenRouter si hay API key; si no, Ollama
+        if OPENROUTER_API_KEY:
+            self._backend = 'openrouter'
+            self._available = True  # se valida en tiempo de llamada (no-bloqueante)
+            logger.info(f"LLMClassifier usando OpenRouter ({OPENROUTER_MODEL})")
+        else:
+            self._backend = 'ollama'
+            self._available = self._check_ollama()
 
     @property
     def available(self) -> bool:
@@ -56,7 +82,12 @@ class LLMClassifier:
 
         try:
             prompt = self._build_prompt(xml_data, pdf_text, unidades_disponibles)
-            respuesta = self._call_ollama(prompt)
+
+            # Elegir backend según configuración
+            if self._backend == 'openrouter':
+                respuesta = self._call_openrouter(prompt)
+            else:
+                respuesta = self._call_ollama(prompt)
 
             if not respuesta:
                 return None
@@ -64,7 +95,8 @@ class LLMClassifier:
             return self._parse_response(respuesta, unidades_disponibles)
 
         except Exception as e:
-            logger.error(f"Error en LLMClassifier: {e}")
+            # No-bloqueante: cualquier error del LLM no debe romper el pipeline
+            logger.error(f"Error en LLMClassifier ({self._backend}): {e}")
             return None
 
     def _build_prompt(
@@ -144,6 +176,51 @@ Ejemplo de respuesta válida: ALMACEN-NVA"""
             logger.warning(f"Ollama timeout ({OLLAMA_TIMEOUT}s)")
             return None
 
+    def _call_openrouter(self, prompt: str) -> Optional[str]:
+        """
+        Llama a OpenRouter (API compatible con OpenAI chat completions).
+        No-bloqueante: ante cualquier fallo devuelve None y registra el motivo.
+        """
+        try:
+            response = requests.post(
+                OPENROUTER_URL,
+                headers={
+                    "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                    "Content-Type": "application/json",
+                    # Cabeceras opcionales recomendadas por OpenRouter para atribución
+                    "HTTP-Referer": os.getenv('OPENROUTER_REFERER', 'https://jade-finance.local'),
+                    "X-Title": "Jade Finance OCR",
+                },
+                json={
+                    "model": OPENROUTER_MODEL,
+                    "messages": [
+                        {"role": "system", "content": "Eres un clasificador de facturas. Responde solo con el código solicitado."},
+                        {"role": "user", "content": prompt},
+                    ],
+                    "temperature": 0.1,
+                    "max_tokens": 20,
+                },
+                timeout=OPENROUTER_TIMEOUT
+            )
+
+            if response.status_code == 200:
+                data = response.json()
+                choices = data.get('choices', [])
+                if choices:
+                    return (choices[0].get('message', {}).get('content') or '').strip()
+                logger.warning("OpenRouter respondió sin choices")
+                return None
+            else:
+                logger.warning(f"OpenRouter respondió {response.status_code}: {response.text[:200]}")
+                return None
+
+        except requests.exceptions.Timeout:
+            logger.warning(f"OpenRouter timeout ({OPENROUTER_TIMEOUT}s)")
+            return None
+        except requests.exceptions.RequestException as e:
+            logger.warning(f"OpenRouter no disponible: {e}")
+            return None
+
     def _parse_response(
         self,
         respuesta: str,
@@ -154,12 +231,13 @@ Ejemplo de respuesta válida: ALMACEN-NVA"""
         El LLM puede responder con el código exacto o con texto libre.
         """
         respuesta_upper = respuesta.upper().strip()
+        metodo_base = f'llm_{self._backend}'  # llm_openrouter | llm_ollama
 
         # Buscar coincidencia exacta con código de unidad
         for unidad in unidades:
             codigo = unidad.get('codigo', '').upper()
             if codigo and codigo in respuesta_upper:
-                logger.info(f"LLM clasificó como: {unidad['nombre']} (código: {codigo})")
+                logger.info(f"LLM ({self._backend}) clasificó como: {unidad['nombre']} (código: {codigo})")
                 return {
                     'success': True,
                     'id': unidad['id'],
@@ -168,7 +246,7 @@ Ejemplo de respuesta válida: ALMACEN-NVA"""
                     'sucursal_id': unidad.get('sucursal_id'),
                     'score': 40,  # Score bajo porque es LLM fallback
                     'confidence': 0.6,
-                    'method': 'llm_ollama',
+                    'method': metodo_base,
                     'keywords': [f'llm_response={respuesta[:50]}']
                 }
 
@@ -185,7 +263,7 @@ Ejemplo de respuesta válida: ALMACEN-NVA"""
                     'sucursal_id': unidad.get('sucursal_id'),
                     'score': 30,
                     'confidence': 0.5,
-                    'method': 'llm_ollama_partial',
+                    'method': f'{metodo_base}_partial',
                     'keywords': [f'llm_response={respuesta[:50]}']
                 }
 
