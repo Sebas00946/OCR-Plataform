@@ -11,6 +11,8 @@ import tempfile
 import os
 import time
 import traceback
+import threading
+import functools
 from pathlib import Path
 
 from .database import db
@@ -111,14 +113,21 @@ async def log_requests(request: Request, call_next):
     # Calcular duración
     duration_ms = (time.time() - start_time) * 1000
     
-    # Registrar petición
-    ocr_logger.log_request(
-        endpoint=str(request.url.path),
-        method=request.method,
-        status_code=response.status_code,
-        duration_ms=duration_ms,
-        client_ip=client_ip
-    )
+    # Registrar petición. Un fallo de logging (disco lleno, permisos, encoding
+    # de stdout en systemd) nunca debe convertir una respuesta válida en un 500.
+    try:
+        ocr_logger.log_request(
+            endpoint=str(request.url.path),
+            method=request.method,
+            status_code=response.status_code,
+            duration_ms=duration_ms,
+            client_ip=client_ip
+        )
+    except Exception as e:
+        try:
+            ocr_logger.logger.error(f"Fallo registrando request {request.url.path}: {e!r}")
+        except Exception:
+            pass
     
     return response
 
@@ -174,30 +183,62 @@ async def root():
 
 @app.get("/api/health")
 async def health_check():
-    """Verificar estado del servicio"""
+    """
+    Liveness: responde al instante sin tocar la BD.
+    El backend lo llama con timeout de 5s antes de cada procesamiento; si
+    dependiera de la BD remota, una BD lenta se vería como "API OCR no disponible".
+    Para verificar la BD usar /api/health/db.
+    """
+    return {
+        "status": "healthy",
+        "version": "1.0.0",
+        "pid": os.getpid(),
+    }
+
+
+@app.get("/api/health/db")
+def health_check_db():
+    """Readiness: verifica la conexión a la BD (corre en threadpool, no bloquea el event loop)."""
+    t0 = time.time()
     try:
-        # Verificar conexión a BD usando el pool
         with db.get_connection() as conn:
             with conn.cursor() as cursor:
                 cursor.execute("SELECT 1")
-        
         return {
             "status": "healthy",
             "database": "connected",
-            "version": "1.0.0"
+            "db_latency_ms": round((time.time() - t0) * 1000, 1),
         }
     except Exception as e:
         ocr_logger.log_error(
-            endpoint="/api/health",
+            endpoint="/api/health/db",
             error_message=str(e),
             error_type=type(e).__name__,
             traceback_info=traceback.format_exc()
         )
-        raise HTTPException(status_code=503, detail=f"Service unhealthy: {str(e)}")
+        raise HTTPException(status_code=503, detail=f"Database unhealthy: {type(e).__name__}: {e}")
 
 
+# Máximo de clasificaciones simultáneas por worker. Las demás esperan turno en
+# vez de saturar el pool de BD (maxconn=20) o la RAM con varios Tesseract a la vez.
+_CLASSIFY_MAX_CONCURRENCY = int(os.getenv('CLASSIFY_MAX_CONCURRENCY', 4))
+_classify_slots = threading.BoundedSemaphore(_CLASSIFY_MAX_CONCURRENCY)
+
+
+def _limitar_concurrencia(func):
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        with _classify_slots:
+            return func(*args, **kwargs)
+    return wrapper
+
+
+# Función síncrona a propósito: todo su trabajo es bloqueante (psycopg2, pdfplumber,
+# Tesseract). Con `def`, FastAPI la ejecuta en el threadpool y el event loop queda
+# libre para /api/health. Con `async def` bloqueaba el worker completo.
 @app.post("/api/classify", response_model=ClassificationResponse)
-async def classify_invoice(
+@_limitar_concurrencia
+def classify_invoice(
     background_tasks: BackgroundTasks,
     xml_file: Optional[UploadFile] = File(None),
     pdf_file: Optional[UploadFile] = File(None),
@@ -282,7 +323,9 @@ async def classify_invoice(
             ocr_logger.logger.debug(f"XML: {len(data.get('xml_text', ''))} chars, PDF: {len(data.get('pdf_text', ''))} chars")
             
         except Exception as e:
-            import traceback
+            # Nota: no re-importar traceback aquí. Un import local lo vuelve variable
+            # local de toda la función y el except final falla con UnboundLocalError
+            # (500 text/plain "Internal Server Error" en vez del JSON de error).
             ocr_logger.log_error(
                 endpoint="/api/classify",
                 error_message=f"Error al extraer texto: {str(e)}",

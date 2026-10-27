@@ -30,7 +30,14 @@ def get_db_config():
         'port': int(os.getenv('DB_PORT', 5432)),
         'user': os.getenv('DB_USER', 'postgres'),
         'password': os.getenv('DB_PASSWORD', ''),
-        'database': os.getenv('DB_NAME', 'veritask_manager')
+        'database': os.getenv('DB_NAME', 'veritask_manager'),
+        # Sin connect_timeout, una BD remota lenta deja el request colgado indefinidamente
+        'connect_timeout': int(os.getenv('DB_CONNECT_TIMEOUT', 5)),
+        # Keepalives TCP: detectan conexiones muertas (firewall/NAT las corta en silencio)
+        'keepalives': 1,
+        'keepalives_idle': 30,
+        'keepalives_interval': 10,
+        'keepalives_count': 3,
     }
 
 

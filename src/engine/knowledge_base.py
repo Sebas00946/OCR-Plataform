@@ -32,15 +32,30 @@ class KnowledgeBase:
     def __new__(cls):
         with cls._lock:
             if cls._instance is None:
-                cls._instance = super().__new__(cls)
-                cls._instance._initialized = False
+                inst = super().__new__(cls)
+                inst._initialized = False
+                # El lock y las estructuras existen desde la creación: si la carga
+                # inicial falla (BD caída al arrancar), los getters devuelven vacío
+                # en vez de lanzar AttributeError en cada request.
+                inst._rlock = threading.RLock()
+                inst._sucursales = {}
+                inst._sucursales_by_codigo = {}
+                inst._unidades = {}
+                inst._unidades_by_sucursal = {}
+                inst._unidad_keywords = {}
+                inst._sucursal_keywords = {}
+                inst._proveedores_by_nit = {}
+                inst._proveedor_config = {}
+                inst._reglas = []
+                inst._sinonimos = []
+                inst._last_refresh = 'never'
+                cls._instance = inst
         return cls._instance
 
     def initialize(self):
         """Carga inicial desde BD. Llamar una vez al arrancar la app."""
         if self._initialized:
             return
-        self._rlock = threading.RLock()
         self._load_all()
         self._initialized = True
         self._start_refresh_thread()

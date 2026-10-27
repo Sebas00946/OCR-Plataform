@@ -18,6 +18,21 @@ LOG_FORMAT = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 DATE_FORMAT = '%Y-%m-%d %H:%M:%S'
 
 
+def _safe_print(msg: str) -> None:
+    """
+    print() que nunca lanza excepción.
+    Bajo systemd stdout va a journald y puede no ser UTF-8: imprimir un emoji
+    lanzaba UnicodeEncodeError y convertía cualquier request en un 500.
+    """
+    try:
+        print(msg)
+    except Exception:
+        try:
+            print(msg.encode('ascii', 'replace').decode('ascii'))
+        except Exception:
+            pass
+
+
 class OCRLogger:
     """Logger personalizado para el sistema OCR"""
     
@@ -106,7 +121,7 @@ class OCRLogger:
         else:
             self.logger.info(log_message + f" - Data: {json.dumps(log_data)}")
         
-        print(f"✅ Log guardado: {endpoint} [{method}] - {status_code}")
+        _safe_print(f"✅ Log guardado: {endpoint} [{method}] - {status_code}")
     
     def log_file_processing(self, factura_id: Optional[int], 
                            xml_file: Optional[str], 
@@ -161,7 +176,7 @@ class OCRLogger:
         else:
             self.file_logger.error(log_message + f" - Data: {json.dumps(file_data)}")
         
-        print(f"✅ Log de archivo guardado: Factura {factura_id or 'N/A'} - {files_str}")
+        _safe_print(f"✅ Log de archivo guardado: Factura {factura_id or 'N/A'} - {files_str}")
     
     def log_validation(self, historial_id: int, es_correcta: bool, 
                       sucursal_correcta_id: Optional[int],
@@ -194,7 +209,7 @@ class OCRLogger:
         else:
             self.logger.warning(log_message + f" - Data: {json.dumps(validation_data)}")
         
-        print(f"✅ Log de validación guardado: Historial {historial_id} - {status}")
+        _safe_print(f"✅ Log de validación guardado: Historial {historial_id} - {status}")
     
     def log_statistics(self, stats: Dict[str, Any]):
         """
@@ -215,7 +230,7 @@ class OCRLogger:
         )
         
         self.stats_logger.info(log_message + f" - Data: {json.dumps(stats_data)}")
-        print(f"✅ Log de estadísticas guardado: Precisión {stats.get('precision', 0)}%")
+        _safe_print(f"✅ Log de estadísticas guardado: Precisión {stats.get('precision', 0)}%")
     
     def log_error(self, endpoint: str, error_message: str, 
                  error_type: str = None, traceback_info: str = None):

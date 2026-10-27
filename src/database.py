@@ -53,15 +53,31 @@ class DatabasePool:
             self.initialize()
             
         conn = None
+        broken = False
         try:
             conn = self._pool.getconn()
+            # Conexión cerrada por el servidor mientras estaba en el pool: reemplazarla
+            if conn.closed:
+                self._pool.putconn(conn, close=True)
+                conn = self._pool.getconn()
             yield conn
         except Exception as e:
+            broken = isinstance(e, (psycopg2.OperationalError, psycopg2.InterfaceError))
             logger.error(f"Error obteniendo conexión de base de datos: {e}")
             raise
         finally:
             if conn:
-                self._pool.putconn(conn)
+                try:
+                    if conn.closed:
+                        broken = True
+                    elif not broken:
+                        # Evita devolver al pool una transacción abierta o abortada
+                        # ("current transaction is aborted" en el siguiente request)
+                        conn.rollback()
+                except Exception:
+                    broken = True
+                # Conexiones rotas se cierran en vez de reciclarse
+                self._pool.putconn(conn, close=broken)
 
 # Instancia global
 db = DatabasePool()
